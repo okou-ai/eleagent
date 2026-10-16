@@ -29,7 +29,7 @@ The web application and upload endpoint share an origin:
 
 The browser records separate short clips and uploads them in order. Keep the page in the foreground. Screen Wake Lock requests an awake display; it cannot prevent a deliberate lock or guarantee background recording. Interrupted capture is shown explicitly. Use HTTPS on phones. iOS 18.4 or later is recommended for home-screen use.
 
-See [the capture protocol](docs/capture.md) and [installation](docs/install.md).
+See [the capture protocol](docs/capture.md), [installation](docs/install.md), and the dated [deployment validation record](docs/deployment-validation.md).
 
 ## Repository
 
@@ -46,7 +46,7 @@ See [the capture protocol](docs/capture.md) and [installation](docs/install.md).
 | `deploy` | Versioned model and hardware recipes |
 | `examples/synthetic-day` | Entirely fictional San Francisco workday |
 
-The local model route has a configured 524,288-token context window. A long synthetic retrieval request succeeded in the original deployment; this is not a general accuracy or concurrency guarantee. Updated prompts, full-night reliability, and clean builds on every supported platform have not been comprehensively evaluated. See [limitations](docs/limitations.md).
+The local model route has a configured 524,288-token context window. A long synthetic retrieval request succeeded in the original deployment; this is not a general accuracy or concurrency guarantee. The deployment validation completed a scheduled GLM/Pi run that inspected images and saved a conversation, event and diary. Broader prompt quality, full-night reliability, and clean builds on every supported platform remain unverified. See [limitations](docs/limitations.md).
 
 ## Licensing
 

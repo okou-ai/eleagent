@@ -157,14 +157,7 @@ class TextWorker:
     def pending(self):
         cursor = self.store.config(self.cursor_key)
         if cursor is None:
-            after = 0
-            while True:
-                page = self.feed(after)
-                after = page['next_cursor']
-                if not page['has_more']:
-                    break
-            self.store.set_config(self.cursor_key, str(after))
-            return [], after
+            cursor = self.store.inherit_feed_cursor(self.cursor_key, 'text_cursor')
         page = self.feed(int(cursor))
         items = [a for a in page['items'] if not (
             (a.get('metadata') or {}).get('test_fixture') or a['capture_id'].startswith(TEST_PREFIXES))]
@@ -231,7 +224,7 @@ class TextWorker:
         return response.json()['items']
 
     @staticmethod
-    def focus_box(focus, objects, clip_start):
+    def focus_box(focus, objects, clip_start, clip_duration):
         # The live note describes where attention is in English (e.g. "the street sign ahead", "a white bottle
         # in my hand"); detector labels are matched against its words, widened by a few synonyms.
         words = {w for w in re.findall(r'[a-z]+', (focus or '').lower()) if len(w) > 2 and w not in FOCUS_STOPWORDS}
@@ -241,6 +234,9 @@ class TextWorker:
         ranked = []
         for event in objects:
             offset = (datetime.fromisoformat(event['started_at']) - clip_start).total_seconds()
+            # The archive query includes the end boundary, which can belong to the next clip.
+            if not 0 <= offset < clip_duration:
+                continue
             for item in (event['body'] or {}).get('observations', []):
                 label = (item.get('label') or '').lower()
                 width, height = item.get('frame_width') or 0, item.get('frame_height') or 0
@@ -284,7 +280,7 @@ class TextWorker:
         objects = self.events(asset['capture_id'], 'object', start, end)
         if not objects:
             return False
-        candidates, matched = self.focus_box(situation.get('focus'), objects, start)
+        candidates, matched = self.focus_box(situation.get('focus'), objects, start, float(asset['duration_seconds']))
         if not candidates:
             return None
         best = None

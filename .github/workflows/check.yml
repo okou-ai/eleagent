@@ -17,6 +17,10 @@ jobs:
           python-version: '3.12'
       - name: Check source syntax
         run: python scripts/check-source.py
+      - name: Check model integrity and conversion guards
+        run: |
+          python -m unittest discover -s deploy/tests
+          python -m unittest discover -s deploy/atlas -p 'test_*.py'
       - name: Check browser state and memory dates
         env:
           ELEAGENT_TIMEZONE: America/Los_Angeles

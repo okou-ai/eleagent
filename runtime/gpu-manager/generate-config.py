@@ -11,6 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--role', choices=('s1', 's2'), required=True)
     parser.add_argument('--bind-address', required=True)
+    parser.add_argument('--port', type=int, default=9210)
     parser.add_argument('--leader-address', required=True)
     parser.add_argument('--image-id', required=True)
     parser.add_argument('--data-dir', type=Path, required=True)
@@ -32,7 +33,7 @@ def main():
     config = {
         'listen_ip': args.bind_address,
         'allowed_bind_addresses': [args.bind_address],
-        'port': 9210,
+        'port': args.port,
         'timezone': args.timezone,
         'acquire_start_minute': 30,
         'acquire_end_minute': 300,

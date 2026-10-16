@@ -2,10 +2,12 @@
 
 Eleagent is an experimental two-host reference system. The initial profile targets two NVIDIA DGX Spark machines running Linux ARM64. It does not include model weights, personal recordings, credentials, or a hosted account.
 
+Before replacing an existing deployment, make and verify a [consistent backup](backup-and-restore.md). Use empty data directories for deployment acceptance.
+
 ## Prepare the stack
 
 1. Clone this repository onto both hosts at the same revision.
-2. Read [third-party notices](../THIRD_PARTY_NOTICES.md), especially the draft-model restrictions and the unresolved MiniCPM demo application license. The perception recipe includes a digest-pinned public CUDA base and locked ARM64 dependencies. A full clean-machine build remains unverified; this is not yet a one-command installation.
+2. Read [third-party notices](../THIRD_PARTY_NOTICES.md), especially the draft-model restrictions and the unresolved MiniCPM demo application license. The perception recipe includes a digest-pinned public CUDA base and locked ARM64 dependencies. The local-asset path has passed service builds, daytime inference, fresh Atlas conversion on both hosts, a scheduled GLM/Pi Sleep run and automatic daytime recovery. A full build using only fresh public downloads remains unverified; this is not yet a one-command installation.
 3. Follow [the dual-Spark deployment guide](../deploy/dual-spark/README.md) to generate private credentials, create storage, prepare model files, build images, and configure the host GPU managers.
 4. Start the internal services with the two supplied Compose files. Expose only the web origin to capture clients. The internal archive, graph database, model servers, and GPU control ports belong on the private network.
 5. Add HTTPS in front of Spark 1's loopback observer listener, then open `/` in your phone's browser.
@@ -34,10 +36,12 @@ Clips are buffered in IndexedDB until the server confirms durable archival. The 
 
 ## Check a deployment
 
+See the dated [deployment validation record](deployment-validation.md) for the exercised local-asset path and its remaining boundaries.
+
 - Open `GET /` and the browser's developer console. The page should load with no external script dependencies.
 - An unauthenticated `POST /` should return `401`.
 - Use [synthetic media](../examples/synthetic-day/README.md) and a separate empty test archive for upload checks. Do not insert fixtures into a personal memory database.
 - Confirm the archive stores MP4/WebM with the correct content type and duplicate uploads return the same durable receipt.
 - Confirm each GPU manager reports its actual daytime state before enabling the sleep scheduler.
 
-The repository's focused checks cover source syntax, upload and archive contracts, browser state transitions, graph reads, and local-calendar handling. They do not establish phone-specific recording reliability, model accuracy, or a fresh two-host GPU installation. See [limitations](limitations.md).
+The repository's focused checks cover source syntax, upload and archive contracts, browser state transitions, graph reads, and local-calendar handling. The separate two-host validation used verified local assets for real daytime inference, fresh Atlas conversion and a scheduled Sleep run with image checks and persisted memories. Neither establishes phone-specific recording reliability, model accuracy or a build using only fresh public downloads. See [limitations](limitations.md).

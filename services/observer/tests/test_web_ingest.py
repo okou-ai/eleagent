@@ -18,6 +18,7 @@ sys.path.insert(0, str(OBSERVER))
 import app.main as observer_main
 from app.main import Settings, create_app
 from app.mobile import decode_clip, probe_clip
+from app.feeder import ArchiveFeeder
 
 # Both services use an `app` package in separate containers. Give the archive a
 # distinct package name in this in-process integration test.
@@ -62,6 +63,7 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
                 raise HTTPException(401)
 
         install_archive_routes(archive_app, self.archive, auth)
+        self.archive_app = archive_app
         self.app = create_app(Settings(api_token=TOKEN, backend='mock', db_path=str(directory / 'observer.sqlite3'),
             archive_url='http://archive.test', archive_token=TOKEN))
         self.service = self.app.state.service
@@ -146,6 +148,37 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.json()['archived'])
         pcm, frames = await decode_clip(self.media['mp4'])
         self.assertTrue(pcm and frames)
+
+    async def test_first_start_processes_archived_clips_and_restart_preserves_progress(self):
+        first = (await self.post('mp4')).json()
+        second = (await self.post('mp4', meta=self.meta(seq=1))).json()
+        feeder = self.service.feeder
+
+        async def connect_archive(value):
+            await value.client.aclose()
+            value.client = httpx.AsyncClient(base_url='http://archive.test',
+                transport=httpx.ASGITransport(app=self.archive_app),
+                headers={'Authorization': 'Bearer ' + TOKEN})
+
+        await connect_archive(feeder)
+        await feeder.poll()
+        self.assertEqual(feeder.pending_count(), 2)
+        self.assertEqual(feeder.next_clip()[0], first['media_id'])
+        await feeder.feed_one(*feeder.next_clip())
+        self.assertEqual(feeder.fed, 1)
+        self.assertGreater(self.service.accepted, 0)
+        await feeder.close()
+        feeder.db.close()
+
+        # Restart against the same durable state with one clip still pending.
+        restarted = ArchiveFeeder(self.service, 'http://archive.test', TOKEN,
+            str(Path(self.temp.name) / 'minicpm-feed.sqlite3'))
+        self.service.feeder = restarted
+        await connect_archive(restarted)
+        third = (await self.post('mp4', meta=self.meta(seq=2))).json()
+        await restarted.poll()
+        pending = {row[0] for row in restarted.db.execute('SELECT media_id FROM pending')}
+        self.assertEqual(pending, {second['media_id'], third['media_id']})
 
     async def test_suspended_overlong_webm_and_invalid_gap_are_rejected(self):
         response = await self.post('long.webm')

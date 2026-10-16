@@ -118,6 +118,20 @@ class Store:
         with self.db:
             self.db.execute('INSERT OR REPLACE INTO config VALUES (?,?)', (key, value))
 
+    def inherit_feed_cursor(self, key, family):
+        """Resume an earlier worker generation, or read from zero on first installation."""
+        if family not in {'speech_cursor', 'text_cursor'} or not key.startswith(family + ':'):
+            raise ValueError('unsupported_feed_cursor_family')
+        with self.write_transaction():
+            row = self.db.execute('SELECT value FROM config WHERE key=?', (key,)).fetchone()
+            if row is not None:
+                return int(row['value'])
+            previous = self.db.execute('SELECT value FROM config WHERE key=? OR key GLOB ?',
+                                       (family, family + ':*')).fetchall()
+            cursor = max((int(row['value']) for row in previous), default=0)
+            self.db.execute('INSERT INTO config(key,value) VALUES(?,?)', (key, str(cursor)))
+            return cursor
+
     def inherit_entity_pipeline(self, model):
         """Continue discovery and unfinished entity work after a model upgrade.
 

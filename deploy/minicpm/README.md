@@ -31,6 +31,23 @@ explicit `librosa>=0.10.2` requirement, so the application retains the deployed
 bash deploy/minicpm/build.sh
 ```
 
+Set `MINICPM_WHEELHOUSE=/absolute/path/to/wheels` to reuse previously downloaded
+wheel and source archives. Keep their original filenames. The installer replaces
+matching artifact URLs with local files and retains the lock's SHA-256 checks;
+missing packages still download normally. The build mounts this directory as a
+read-only BuildKit context instead of including it in the final image.
+`MINICPM_SOURCE_DIR` may point to an existing Git checkout containing the pinned
+upstream commit. The build verifies its commit and tree, then exports that commit;
+uncommitted files are never copied into the image.
+
+For an offline application check, `MINICPM_CACHED_BASE_IMAGE` can name an existing
+local **dependency-only** image with ARM64 Python 3.12, CUDA 13 PyTorch, FFmpeg,
+and curl. The script resolves and records its image ID before building the pinned
+application source. Use this instead of `MINICPM_BASE_IMAGE`, never together.
+This checks the application against a cached environment; it does **not** prove
+that `base.Dockerfile` builds on a clean host. Preserve the cache image's origin
+and package inventory in your private deployment records.
+
 The default build composes the public base and application into one multi-stage
 build. `build-base.sh` optionally builds only the base. To use a separately
 reviewed public base instead, set `MINICPM_BASE_IMAGE` to an immutable public
@@ -38,13 +55,19 @@ reference ending in `@sha256:...`. No previously built machine-local image is
 required. The pinned upstream model/application select PyTorch SDPA when the
 optional `flash-attn` package is absent; no Flash Attention wheel is required.
 
-Registry identities, public wheel metadata, dependency resolution, and recipe
-syntax were checked. This public base is a **build candidate**: a clean-host
-image build, GB10 model loading, and inference acceptance have not been run.
-The Dockerfiles include CPU-side import and version checks; they do not load
-model weights. Ubuntu package updates are not snapshot-pinned, so this is not a
-claim of bit-for-bit reproducible image output. Upstream application licensing
-remains a separate review item even when all build inputs are public.
+The cached-dependency path was built from the pinned application source on a
+GB10 host. The 33 application wheels were hash-checked and reinstalled, the model
+loaded with PyTorch SDPA, and synthetic video/audio uploads produced real MiniCPM
+observations. All 38 required local model files matched the pinned upstream
+revision. See the [deployment validation record](../../docs/deployment-validation.md).
+
+The default public base remains a **build candidate**: its registry identities,
+public wheel metadata, dependency resolution and recipe syntax were checked,
+but its full clean-host image build has not run. The Dockerfiles include
+CPU-side import and version checks; those build checks do not load model weights.
+Ubuntu package updates are not snapshot-pinned, so this is not a claim of
+bit-for-bit reproducible image output. Upstream application licensing remains
+a separate review item even when all build inputs are public.
 
 The English entrypoint starts the backend on container loopback, waits for model
 readiness, then starts the forwarding worker. It terminates both child processes

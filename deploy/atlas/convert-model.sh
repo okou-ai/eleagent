@@ -8,3 +8,4 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 bash "$here/fetch-sources.sh" "$work/context" >/dev/null
 bash "$work/context/install/convert.sh" "$1" "$2"
+python3 "$here/prepare-overlay.py" "$1"
