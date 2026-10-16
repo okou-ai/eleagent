@@ -41,10 +41,16 @@ profile. Sleep limits its own request context to 512K tokens.
    Do not start the ranks alongside daytime GPU workers.
 
 `fetch-sources.sh DESTINATION` prepares sources without building or inference.
-`create-rank.sh` only creates a stopped rank. Neither performs downloads or model
-conversion. Build checks are upstream CPU-side compilation checks, not quality
-benchmarks. The public packaging was checked statically; a clean-host build and
-nighttime handoff remain release acceptance work.
+`create-rank.sh` only creates a stopped rank. Neither downloads model weights or
+converts them. The [deployment validation record](../../docs/deployment-validation.md)
+includes a source rebuild using local build assets and fresh GPU conversions on
+both hosts. Each conversion produced 864 MTP matrices, verified 9,098 copied
+tensors, and passed independent verification of all 9,962 tensor payloads. Source
+checkpoints stayed read-only. The scheduler subsequently acquired a normal GPU
+lease, completed a real Pi task using the two-rank GLM runtime, and automatically
+restored both hosts to daytime readiness. The upstream build checks are CPU-side
+checks, not quality benchmarks. Fresh downloads of every default public base
+remain separate acceptance work.
 
 ## Reusing local build assets
 

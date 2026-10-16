@@ -2,7 +2,7 @@
 
 This recipe places capture and graph services on Spark 1, and storage and recognition on Spark 2. It uses Linux host networking and private IPv4 addresses. A generic HTTPS reverse proxy on Spark 1 forwards the public web origin to `127.0.0.1:8080`; the browser uploads directly to `/`. The archive, database, model servers, and GPU manager are internal services.
 
-These files are an open-source deployment candidate. CPU service checks and ARM64 dependency resolution have passed, but a complete clean-machine build and two-host acceptance run remain outstanding. The MiniCPM image is built separately from its pinned public CUDA base and dependency locks; see `../minicpm/README.md`. Its upstream application license remains unresolved. Do not assume that a missing local image can be pulled from a registry.
+This recipe has passed service builds, daytime inference, fresh Atlas conversion on both hosts, a scheduled GLM/Pi Sleep run and automatic daytime recovery using verified local assets; see the dated [deployment validation record](../../docs/deployment-validation.md). A build using only fresh public downloads remains separate acceptance work. Build the [MiniCPM image](../minicpm/README.md) separately using its public base recipe or explicit cached-dependency mode. Its upstream application license remains unresolved. Do not assume that a missing local image can be pulled from a registry.
 
 ## Prerequisites
 
@@ -42,7 +42,9 @@ The commands below use the example root `/srv/eleagent`; adjust them when changi
 On both hosts:
 
 ```sh
-sudo install -d -m 0755 /srv/eleagent/data /srv/eleagent/models
+sudo install -d -m 0755 /srv/eleagent/data
+sudo install -d -m 0755 -o 1000 -g 1000 /srv/eleagent/models
+sudo install -d -m 0700 -o 1000 -g 1000 /srv/eleagent/data/model-metadata
 sudo install -d -m 0700 -o 1000 -g 1000 /srv/eleagent/data/gpu-manager
 ```
 

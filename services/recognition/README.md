@@ -10,7 +10,9 @@ Recognition creates provisional evidence, not verified identities. Original sour
 
 ## Containers
 
-Build the `objects`, `speech`, and `ocr` targets of this directory's Dockerfile. The GPU targets use checksum-pinned official CUDA 13 wheels for ARM64 and CPython 3.12. They require the NVIDIA container runtime and a compatible driver. All three dependency sets resolve for ARM64/CPython 3.12 and their transitive versions are locked in `requirements-*.lock`. The speech build includes upstream tokenizer dependencies that may compile from source. A deployment acceptance run can reuse verified local model files and an explicit dependency image as described below. This does not establish a network-only clean-machine build or model accuracy.
+Build the `objects`, `speech`, and `ocr` targets of this directory's Dockerfile. The GPU targets use checksum-pinned official CUDA 13 wheels for ARM64 and CPython 3.12. They require the NVIDIA container runtime and a compatible driver. All three dependency sets resolve for ARM64/CPython 3.12 and their transitive versions are locked in `requirements-*.lock`. The speech build includes upstream tokenizer dependencies that may compile from source.
+
+All three targets were built and exercised on synthetic media in the [deployment validation run](../../docs/deployment-validation.md). The GPU targets reused exact-version installed PyTorch packages from a local dependency image; model files were verified against their pinned hashes. The run exercised object processing, CAM++/Qwen speech, and baseline/focus OCR. It does not establish a fresh download of all default dependencies or model accuracy.
 
 ```sh
 docker build --target objects -t eleagent-recognition services/recognition

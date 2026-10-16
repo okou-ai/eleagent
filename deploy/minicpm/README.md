@@ -55,13 +55,19 @@ reference ending in `@sha256:...`. No previously built machine-local image is
 required. The pinned upstream model/application select PyTorch SDPA when the
 optional `flash-attn` package is absent; no Flash Attention wheel is required.
 
-Registry identities, public wheel metadata, dependency resolution, and recipe
-syntax were checked. This public base is a **build candidate**: a clean-host
-image build, GB10 model loading, and inference acceptance have not been run.
-The Dockerfiles include CPU-side import and version checks; they do not load
-model weights. Ubuntu package updates are not snapshot-pinned, so this is not a
-claim of bit-for-bit reproducible image output. Upstream application licensing
-remains a separate review item even when all build inputs are public.
+The cached-dependency path was built from the pinned application source on a
+GB10 host. The 33 application wheels were hash-checked and reinstalled, the model
+loaded with PyTorch SDPA, and synthetic video/audio uploads produced real MiniCPM
+observations. All 38 required local model files matched the pinned upstream
+revision. See the [deployment validation record](../../docs/deployment-validation.md).
+
+The default public base remains a **build candidate**: its registry identities,
+public wheel metadata, dependency resolution and recipe syntax were checked,
+but its full clean-host image build has not run. The Dockerfiles include
+CPU-side import and version checks; those build checks do not load model weights.
+Ubuntu package updates are not snapshot-pinned, so this is not a claim of
+bit-for-bit reproducible image output. Upstream application licensing remains
+a separate review item even when all build inputs are public.
 
 The English entrypoint starts the backend on container loopback, waits for model
 readiness, then starts the forwarding worker. It terminates both child processes
