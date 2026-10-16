@@ -41,3 +41,32 @@ The local model route has a configured 524,288-token context window.
 Original project code is AGPL-3.0-only unless a file states otherwise. Dependencies retain their own licenses. Model weights are obtained separately and are not covered by this repository's license.
 
 **The DFlash2 draft weights in the experimental accelerated recipe use CC BY-NC-ND 4.0.** This recipe is not an unrestricted commercial model stack. Downloading weights yourself does not remove their license conditions. The pinned MiniCPM demo application also lacks an explicit source license; resolve its redistribution terms separately. See [third-party notices](THIRD_PARTY_NOTICES.md) and the model manifest before choosing a deployment.
+
+## References
+
+Only research that directly informed Eleagent's core design is listed below. These are functional design influences, not claims that Eleagent reproduces biological mechanisms, implements the papers' algorithms, or inherits their experimental results.
+
+| Core design decision | Research influence | Implementation |
+| --- | --- | --- |
+| Keep selected memories and source links in the graph, with original media retained separately in the archive. | Hippocampal indexing [1]. | [Archive](services/archive) and [Sleep evidence tools](services/sleep/extensions/memory.ts). |
+| Separate fast online perception from slower offline integration into long-term memory. | Complementary learning systems [2]. | [Observer](services/observer) and [nightly Sleep agent](services/sleep). |
+| Consolidate perceptual fragments into reusable entity memories; allow low-value fragments to fade while retaining original recordings. | Abstraction across experiences [3] and the functional role of forgetting [4]. | [Sleep prompt: consolidation and forgetting](services/sleep/prompts/sleep.md). |
+| Organize meaningful occurrences as semantic events, not simply as fixed-duration capture buckets. | Event segmentation [5]. | [Sleep prompt: events, intervals, and dates](services/sleep/prompts/sleep.md). |
+| Feed recent context and recalled memories back into perception, with attention expressed in terms of the current activity. | Context-dependent cognitive control [6] and task-guided attention [7]. | [Online situation context and perception prompt](services/observer/app/situation.py). |
+| Distinguish observed evidence, reported speech, and interpretation, including whether speech comes from an in-person interaction or a device. | Source monitoring [8]. | [Perception prompt](services/observer/app/situation.py) and [Sleep evidence rules](services/sleep/prompts/sleep.md). |
+
+[1] T. J. Teyler and P. DiScenna, “The hippocampal memory indexing theory,” *Behavioral Neuroscience*, vol. 100, no. 2, pp. 147–154, 1986, doi: [10.1037/0735-7044.100.2.147](https://doi.org/10.1037/0735-7044.100.2.147).
+
+[2] J. L. McClelland, B. L. McNaughton, and R. C. O'Reilly, “Why there are complementary learning systems in the hippocampus and neocortex: Insights from the successes and failures of connectionist models of learning and memory,” *Psychological Review*, vol. 102, no. 3, pp. 419–457, 1995, doi: [10.1037/0033-295X.102.3.419](https://doi.org/10.1037/0033-295X.102.3.419).
+
+[3] P. A. Lewis and S. J. Durrant, “Overlapping memory replay during sleep builds cognitive schemata,” *Trends in Cognitive Sciences*, vol. 15, no. 8, pp. 343–351, 2011, doi: [10.1016/j.tics.2011.06.004](https://doi.org/10.1016/j.tics.2011.06.004).
+
+[4] B. A. Richards and P. W. Frankland, “The persistence and transience of memory,” *Neuron*, vol. 94, no. 6, pp. 1071–1084, 2017, doi: [10.1016/j.neuron.2017.04.037](https://doi.org/10.1016/j.neuron.2017.04.037).
+
+[5] J. M. Zacks, N. K. Speer, K. M. Swallow, T. S. Braver, and J. R. Reynolds, “Event perception: A mind-brain perspective,” *Psychological Bulletin*, vol. 133, no. 2, pp. 273–293, 2007, doi: [10.1037/0033-2909.133.2.273](https://doi.org/10.1037/0033-2909.133.2.273).
+
+[6] E. K. Miller and J. D. Cohen, “An integrative theory of prefrontal cortex function,” *Annual Review of Neuroscience*, vol. 24, pp. 167–202, 2001, doi: [10.1146/annurev.neuro.24.1.167](https://doi.org/10.1146/annurev.neuro.24.1.167).
+
+[7] M. F. Land and M. Hayhoe, “In what ways do eye movements contribute to everyday activities?,” *Vision Research*, vol. 41, nos. 25–26, pp. 3559–3565, 2001, doi: [10.1016/S0042-6989(01)00102-X](https://doi.org/10.1016/S0042-6989(01)00102-X).
+
+[8] M. K. Johnson, S. Hashtroudi, and D. S. Lindsay, “Source monitoring,” *Psychological Bulletin*, vol. 114, no. 1, pp. 3–28, 1993, doi: [10.1037/0033-2909.114.1.3](https://doi.org/10.1037/0033-2909.114.1.3).
