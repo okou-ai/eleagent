@@ -4,7 +4,7 @@ Eleagent is an experimental two-host reference system. The initial profile targe
 
 Before replacing an existing deployment, make and verify a [consistent backup](backup-and-restore.md). Use empty data directories for deployment acceptance.
 
-Agents performing an installation or migrating an existing deployment should follow the [agent deployment runbook](agent-runbook.md). It orders these steps and adds acceptance, data migration and cutover procedures.
+Agents performing an installation or migrating an existing deployment should follow the [agent deployment runbook](agent-runbook.md). It orders these steps and adds the data migration and cutover procedure.
 
 ## Prepare the stack
 

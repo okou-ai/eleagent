@@ -1,13 +1,12 @@
 # Agent deployment runbook
 
-This runbook is the entry point for an agent that installs Eleagent on two DGX Spark hosts, or moves an existing deployment's data onto Eleagent and makes it the production stack. It puts the existing guides in execution order and adds the acceptance and cutover procedures that the component guides do not cover.
+This runbook is the entry point for an agent that installs Eleagent on two DGX Spark hosts, or moves an existing deployment's data onto Eleagent and makes it the production stack. It puts the existing guides in execution order and adds the data migration and cutover procedure that the component guides do not cover.
 
 Component guides stay authoritative for their details:
 
 - [Dual-Spark deployment](../deploy/dual-spark/README.md): storage, credentials, Compose and GPU managers
 - [Model preparation](../deploy/models.md), [Atlas](../deploy/atlas/README.md), [MiniCPM](../deploy/minicpm/README.md) and [recognition](../services/recognition/README.md)
 - [Backup and restore](backup-and-restore.md) and the [capture protocol](capture.md)
-- The dated [deployment validation record](deployment-validation.md), which records what this procedure was proven against
 
 ## How to use this runbook
 
@@ -35,17 +34,15 @@ flowchart TD
     Q -->|Yes| P1[1. Back up existing data]
     P1 --> P2
     P2 --> P3[3. Configure and build]
-    P3 --> P4[4. Daytime acceptance on empty data]
-    P4 --> P5[5. Night and recovery acceptance]
-    P5 --> R{Path}
-    R -->|New install| P7[7. Production start]
-    R -->|Migration| P6[6. Migrate data and cut over]
-    P6 --> P7
-    P7 --> P8[8. Phone capture handoff]
+    P3 --> R{Path}
+    R -->|Migration| P4[4. Migrate data]
+    R -->|New install| P5[5. Start services]
+    P4 --> P5
+    P5 --> P6[6. Phone capture handoff]
 ```
 
-- **New install:** no recordings exist yet. Phases 4 and 5 run on the same empty data directories that become production; reset them only with the owner's approval before Phase 7, because acceptance writes synthetic memories.
-- **Migration:** an older deployment holds personal data. Phases 4 and 5 run in a separate validation root with empty data. Phase 6 then copies the old data into a new production root.
+- **New install:** no recordings exist yet. Services start on empty data directories.
+- **Migration:** an older deployment holds personal data. Phase 4 copies its latest data into the new data root before anything starts, and Phase 5 retires the old stack after the new one is running.
 
 ## Phase 0: Preflight
 
@@ -83,9 +80,9 @@ Follow [Back up a deployment](backup-and-restore.md) exactly. The essentials:
 5. Write the backup receipt.
 
 **Success:** both hosts have a receipt with matching hashes, `ok` integrity results and a passing Neo4j check.
-**On failure:** keep the old services stopped until you know why, or restart them from the inventory if the owner wants capture back. Do not proceed to Phase 6 without a verified backup.
+**On failure:** keep the old services stopped until you know why, or restart them from the inventory if the owner wants capture back. Do not proceed to Phase 4 without a verified backup.
 
-Phases 4 and 5 reuse GPUs and ports. Leave the old deployment stopped while they run, or restart it between phases only with its recorded configuration.
+The new stack reuses the old deployment's GPUs and ports. Keep the old deployment stopped from here on unless the owner wants capture back; restart it only with its recorded configuration.
 
 ## Phase 2: Models and dependencies
 
@@ -115,108 +112,24 @@ Atlas conversion reads the source checkpoints read-only and writes a separate `a
 
 **Where:** both hosts. **Repeatable:** builds yes; credential and manager configuration generation refuse to overwrite.
 
-1. **Private `.env`.** New install: generate it as in the [dual-Spark guide](../deploy/dual-spark/README.md#private-configuration), then copy the identical file to the other host. Migration: see [preserving credentials](#preserving-credentials) before creating it; the validation root still uses newly generated values.
+1. **Private `.env`.** New install: generate it as in the [dual-Spark guide](../deploy/dual-spark/README.md#private-configuration), then copy the identical file to the other host. Migration: create it from the old deployment's values as described in [preserving credentials](#preserving-credentials).
 2. **Images.** Build the CPU services, then `recognition` and `speech` on Spark 2, MiniCPM on Spark 1, and Atlas on both hosts. Use the documented cache options when large dependencies already exist locally:
    - MiniCPM: `MINICPM_WHEELHOUSE`, `MINICPM_SOURCE_DIR` or `MINICPM_CACHED_BASE_IMAGE` ([MiniCPM](../deploy/minicpm/README.md))
    - Recognition: `RECOGNITION_BASE_IMAGE` with `REUSE_INSTALLED_TORCH=1` ([recognition](../services/recognition/README.md#reusing-a-local-dependency-image))
    - Atlas: `ATLAS_NATIVE_ARTIFACTS_DIR`, `ATLAS_SOURCE_CACHE`, `ATLAS_CUDA_*_IMAGE` ([Atlas](../deploy/atlas/README.md#reusing-local-build-assets))
 
-   Record every image ID and every cache override. A cached build validates the application source, not a fresh download of the default base.
+   Record every image ID and every cache override.
 3. **GPU managers.** Generate one control token, copy it to the other host, generate each host's configuration with `generate-config.py`, install the unit with the UID-1000 account, and enable it ([dual-Spark guide](../deploy/dual-spark/README.md#host-gpu-managers)). The manager timezone must equal `ELEAGENT_TIMEZONE`.
 4. **Compose configuration.** Run `docker compose ... config --quiet` for each host file, including any private override file. Do not save its output.
 
 **Success:** all images exist with recorded IDs; `config --quiet` passes on both hosts; `systemctl is-active eleagent-gpu-manager` is `active` and `GET /status` on each manager reports `idle` with no lease.
 **On failure:** registry or network errors during builds are not reasons to edit Dockerfiles. Use a documented cache option, or report the missing dependency and ask whether a download is approved.
 
-## Phase 4: Daytime acceptance on empty data
-
-**Where:** a deployment whose data directories are empty. **Repeatable:** yes, but every run adds synthetic records to that deployment.
-
-Start Spark 2's services, then Spark 1's daytime services. Do not start `sleep` yet:
-
-```sh
-# Spark 2
-docker compose --env-file .env -f compose.spark2.yaml up -d --no-build
-# Spark 1
-docker compose --env-file .env -f compose.spark1.yaml up -d --no-build graph minicpm observer graph-api
-```
-
-Wait for readiness: Neo4j healthy, MiniCPM `/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes.
-
-Create synthetic clips. Never use personal recordings for acceptance. This needs FFmpeg built with `flite` and `drawtext`:
-
-```sh
-# A test card with a synthetic voice, so speech and OCR both have input.
-FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-ffmpeg -nostdin -v error -n \
-  -f lavfi -i 'color=c=white:s=1280x720:r=15' \
-  -f lavfi -i 'flite=text=We will review two designs tomorrow at ten in the morning.:voice=slt' \
-  -vf "drawtext=fontfile=$FONT:text='DESIGN REVIEW':fontcolor=black:fontsize=58:x=(w-text_w)/2:y=220,drawtext=fontfile=$FONT:text='Tomorrow at 10 AM':fontcolor=black:fontsize=48:x=(w-text_w)/2:y=330" \
-  -af apad -t 5 -c:v libx264 -pix_fmt yuv420p -c:a aac -ar 16000 -movflags +faststart clip.mp4
-```
-
-Upload each clip twice with identical metadata. The first response must be `"archived": true, "duplicate": false`; the second must have the same `media_id` and `sha256`, with `"duplicate": true`. `SCENE_API_TOKEN` must be loaded from the private `.env` in the current shell:
-
-```sh
-cat > meta.json <<'JSON'
-{"capture_id": "acceptance-0001", "clip_seq": 0,
- "captured_at": "2026-04-14T09:00:00-07:00", "captured_end_at": "2026-04-14T09:00:05-07:00",
- "camera": "back", "source": "browser_media_recorder", "capture_gaps": [], "locations": []}
-JSON
-for attempt in 1 2; do
-  curl -sS -H "Authorization: Bearer $SCENE_API_TOKEN" \
-    -F 'meta=<meta.json' -F 'video=@clip.mp4;type=video/mp4' http://127.0.0.1:8080/
-  echo
-done
-```
-
-Increment `clip_seq` and the timestamps for further clips in the same capture. For Phase 5, set `captured_at` to the previous local day in the deployment's timezone.
-
-Upload at least four consecutive clips and check each stage:
-
-| Stage | Evidence |
-| --- | --- |
-| Ingress | Unauthenticated `POST /` returns `401`; `GET /` returns the page |
-| Archive | `GET /v1/archive/feed?after=0` on Spark 2's archive with `SCENE_ARCHIVE_TOKEN` lists every clip with the right content type |
-| MiniCPM | Observer logs or archive events show an observation per clip |
-| Objects and faces | Recognition events for each clip |
-| OCR | Baseline and focus OCR events for each clip, with no FFmpeg errors at clip boundaries |
-| Speech | A transcript event close to the spoken sentence |
-| Graph | `GET /v1/graph/entities?limit=200` on Spark 1's Graph API with `GRAPH_API_TOKEN` returns new entities |
-| Backlog | Every worker's cursor equals the archive head and its pending queue is empty |
-
-Also check the first-start backlog: stop one worker, upload a clip, start the worker, and confirm it processes the clip. A new worker started after clips were uploaded must process them from cursor zero.
-
-**Success:** every row above has evidence, and the backlog is empty.
-**On failure:** read the failing service's logs and its state. Fix code through a reviewed change, rebuild that one image, and restart that one service. Do not delete its state to clear an error.
-
-## Phase 5: Night and recovery acceptance
-
-**Where:** the same empty-data deployment. **Repeatable:** once per local night in that deployment's timezone; the scheduler records each completed night.
-
-The scheduler acquires GPUs only between 00:30 and 05:00 local time in `ELEAGENT_TIMEZONE`, and only for days it has not slept yet. Either run this phase during that window, or, **for an isolated validation deployment only**, choose an IANA timezone whose current local time is inside the window. In that case, set the same value in that deployment's `.env` and both managers' `--timezone`. Never change a production timezone for testing: it moves day boundaries and the night window.
-
-1. Confirm both managers are `idle` with no lease, and that the previous day in the deployment's timezone has synthetic clips (Phase 4).
-2. Start the scheduler on Spark 1: `docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep`.
-3. Watch, without intervening:
-   - Both managers move through `prepared` to running a rank; daytime GPU workers on both hosts drain and stop. Observer and CPU services keep running.
-   - Both Atlas ranks become ready, rank 1 before rank 0.
-   - The Pi run completes. Its tool calls include candidate image views, and it saves at least one conversation or event and a diary.
-   - Scheduler state records the day as slept with no last error.
-4. Confirm recovery: both managers return to `idle` with no lease and no rank container; MiniCPM, recognition and speech are running with fresh readiness markers; pause markers are gone; `ready.py` exits 0 on both hosts.
-5. Upload one more clip and confirm every daytime stage processes it.
-6. Read the saved memories through the Graph API and confirm they exist independently of scheduler logs.
-
-**Success:** all six steps have evidence. Record lease timings, tool-call count and errors, memory counts and recovery state.
-**On failure:** if a run fails, the managers restore daytime services at the hard deadline, when a lease expires, or after a manager restart. Wait for that, and confirm recovery before investigating. Do not start or remove Atlas rank containers by hand while a manager owns them. Keep the scheduler's run files: they are the evidence.
-
-When this phase passes on the Migration path, stop the validation scheduler, wait for both managers to report `idle`, then stop the validation managers and containers. Keep the validation data as evidence; it is not migrated.
-
-## Phase 6: Migrate data and cut over
+## Phase 4: Migrate data
 
 **Where:** both hosts, Migration path only. **Repeatable:** copying into a non-empty destination is refused; to redo it, move the incomplete destination aside with the owner's approval and start again.
 
-Phase 6 moves the old deployment's latest data into a new production root and makes Eleagent the deployment that runs from now on. Unlike the restore rehearsal in the backup guide, the old core services are not started again afterward.
+Phase 4 moves the old deployment's latest data into the new data root. Eleagent then becomes the deployment that runs from now on. Unlike the restore rehearsal in the backup guide, the old core services are not started again afterward.
 
 ### Preserving credentials
 
@@ -263,9 +176,22 @@ The same private override is the place for other deployment-specific settings ca
 5. **Ownership.** Apply the ownership from the [storage table](../deploy/dual-spark/README.md#storage-and-permissions): archive UID 10001 with group-readable databases, Neo4j as chosen above, everything else UID 1000.
 6. **Receipt.** Record file counts, bytes, checksum results, database checks and the directory map.
 
-### Start and verify
+## Phase 5: Start services
 
-Start Spark 2, then Spark 1's daytime services, as in Phase 4, using the production `.env` and the private override. Before starting `sleep`, verify:
+**Where:** both hosts. **Repeatable:** yes; `up -d --no-build` never touches data.
+
+Start Spark 2's services, then Spark 1's daytime services. On the Migration path, include the private override through the launcher from Phase 4. Do not start `sleep` yet:
+
+```sh
+# Spark 2
+docker compose --env-file .env -f compose.spark2.yaml up -d --no-build
+# Spark 1
+docker compose --env-file .env -f compose.spark1.yaml up -d --no-build graph minicpm observer graph-api
+```
+
+Wait for readiness: Neo4j healthy, MiniCPM `/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm that `GET /` returns the page and an unauthenticated `POST /` returns `401`.
+
+On the Migration path, also confirm that the data was carried over before starting `sleep`:
 
 | Check | Required result |
 | --- | --- |
@@ -275,33 +201,32 @@ Start Spark 2, then Spark 1's daytime services, as in Phase 4, using the product
 | Identity data | Entity, sample and voice-identity counts equal the old deployment's |
 | Graph | Graph API returns the old entity and link counts using the preserved `GRAPH_API_TOKEN` |
 | Sleep state | `scheduler.json` shows the last day the old deployment slept |
-| Ingress | `GET /` 200 and unauthenticated `POST /` 401 through the public origin |
-| GPUs | Both managers `idle`, `ready.py` exits 0 on both hosts |
 
-Then start `sleep`. Its next run is the next scheduled local night; do not trigger a manual night run against production data.
+Then, with both managers `idle`, start the scheduler on Spark 1:
 
-### Retire the old stack
+```sh
+docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep
+```
 
-Ask the owner before this step. Then:
+Its first run is the next scheduled local night between 00:30 and 05:00 in `ELEAGENT_TIMEZONE`. Do not trigger a manual night run or change the timezone to force one.
+
+Confirm restart policies are `unless-stopped`, the managers are enabled, only the HTTPS origin is reachable from outside, and the private ports are bound as listed in the [listener table](../deploy/dual-spark/README.md#build-and-start).
+
+**On failure:** read the failing service's logs and its state. Do not delete its state to clear an error. If a night run fails, the managers restore daytime services at the hard deadline, when a lease expires, or after a manager restart; wait for that before investigating, and do not start or remove Atlas rank containers by hand.
+
+### Retire the old stack (Migration path)
+
+After the new stack is running, ask the owner before this step. Then:
 
 1. Stop the old core containers and set their restart policy to `no` (`docker update --restart=no`). Do not remove them.
-2. Stop and disable the old GPU manager units and any validation manager units. Only the new `eleagent-gpu-manager` stays enabled.
+2. Stop and disable the old GPU manager units. Only the new `eleagent-gpu-manager` stays enabled.
 3. Point surrounding services, such as the HTTPS ingress, tunnels and monitoring, at the new containers. Keep the public origin unchanged.
 4. Keep the old data directories, the old containers and the Phase 1 backup. Removing them needs a separate retention decision from the owner.
 5. Write the cutover receipt: preserved counts, image IDs, private override path, retired services and backup location.
 
 **On failure before retirement:** stop the new stack and restart the old one from its inventory; its data was only read. **On failure after retirement:** stop the new stack, verify Phase 1's backup, and ask the owner before restoring, because new recordings may exist only in the new root.
 
-## Phase 7: Production start
-
-**Where:** both hosts. **Repeatable:** yes.
-
-- **New install:** with the owner's approval, stop the stack, replace the acceptance data directories with empty ones (Phase 3 storage commands), and start again as in Phase 4. Start `sleep` only after both managers are ready.
-- **Both paths:** confirm restart policies are `unless-stopped`, the managers are enabled, only the HTTPS origin is reachable from outside, and the private ports are bound as listed in the [listener table](../deploy/dual-spark/README.md#build-and-start).
-
-The next morning, check that the scheduler recorded the night with no error, both managers are `idle`, daytime services recovered, and the diary exists in the graph.
-
-## Phase 8: Phone capture handoff
+## Phase 6: Phone capture handoff
 
 **Where:** Spark 1 and the owner's phone. **Repeatable:** yes.
 
@@ -311,8 +236,4 @@ The next morning, check that the scheduler recorded the night with no error, bot
 4. Confirm on the servers: new clips archived, MiniCPM, recognition, OCR and speech events for them, a non-empty transcript, and queues draining. Short queues after a burst of buffered uploads are normal; a growing backlog is not.
 
 **Success:** the owner's own clips reach every stage, and speech produces text.
-**On failure:** check upload responses first (401 means a wrong token; a conflict means a reused identity), then the per-stage table in Phase 4.
-
-## What this runbook has and has not been proven against
-
-The full sequence ran on 2026-10-16, with local copies of weights and large dependencies. See the [validation record](deployment-validation.md). That run included the Migration path for 8,669 historical clips with no reprocessing. A build that downloads every default base dependency from public sources has not been run. MiniCPM's default public base in particular remains unverified. Phone behavior over long sessions is outside this runbook; see [limitations](limitations.md).
+**On failure:** check upload responses first (401 means a wrong token; a conflict means a reused identity), then whether each service is running and its queue is moving.
