@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "start": "node main.mjs",
-    "test": "node --test integration.test.mjs"
+    "test": "node --test *.test.mjs"
   },
   "dependencies": {
-    "neo4j-driver": "6.2.0"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "neo4j-driver": "6.2.0",
+    "zod": "3.25.76"
   },
   "license": "AGPL-3.0-only"
 }

@@ -20,6 +20,25 @@ The browser records separate short clips and uploads them in order. Keep the pag
 
 To deploy, follow the [agent deployment runbook](docs/agent-runbook.md).
 
+## Read-only MCP
+
+The graph HTTP server exposes **`POST /mcp`** using stateless MCP Streamable HTTP (JSON responses). Connect a standard MCP client to the graph API origin plus `/mcp`, sending `Authorization: Bearer <GRAPH_API_TOKEN>`. GET/SSE and DELETE sessions are not used. Existing `/v1/graph` endpoints remain available.
+
+| Tool | Purpose |
+| --- | --- |
+| `search_entities` | Search property text, filter exact properties, sort and paginate |
+| `get_entity` | Read one entity by ID |
+| `list_entity_links` | Page through an entity's relationships and adjacent entities |
+| `get_subgraph` | Bounded graph expansion with explicit truncation |
+| `list_video_clips` | List original clips by capture, UTC/time-offset interval or graph `entity_id` |
+| `get_video_clip` | Read clip metadata and an authenticated original-download URL |
+
+Graph evidence refers to originals through stable `media_id` values, not filesystem paths. Media references distinguish full clips, timestamped intervals and representative points; a representative frame does not prove an entire event. Use `list_video_clips` with `entity_id`, then `get_video_clip` with a returned `media_id`. Missing source files/references are reported rather than silently substituted. Graph model interpretations are not verified facts.
+
+Original URLs use the same graph origin (`/v1/archive/media/{media_id}/original`); fetch them with the **same graph Bearer token**. GET, HEAD and byte ranges stream from Spark-2 without embedding large video blobs in MCP JSON. The graph server injects its separate archive credential internally. Never put credentials in URLs. `ARCHIVE_URL` and `SCENE_ARCHIVE_TOKEN` enable archive access; the dual-Spark Compose configuration supplies them. No public archive port or additional database writes are required.
+
+Non-browser MCP clients work without Origin. Browser clients are denied by default: explicitly allow trusted exact origins through comma-separated `MCP_ALLOWED_ORIGINS`; do not use a wildcard. All six tools are read-only; arbitrary Cypher, ingestion and memory mutation are not exposed.
+
 ## Repository
 
 | Path | Responsibility |

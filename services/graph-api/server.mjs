@@ -1,83 +1,14 @@
 import http from 'node:http';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { ApiError } from './graph.mjs';
+import { cursors, parseFilter, integer, string, queryParams } from './validation.mjs';
+import { createMcpHandler } from './mcp.mjs';
 
 const MAX_BODY = 32 * 1024;
-const MAX_CURSOR = 12 * 1024;
 const bad = (message) => new ApiError(400, 'invalid_request', message);
 const object = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const canonical = (x) => JSON.stringify(object(x)
   ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x);
-
-function integer(value, fallback, min, max, name) {
-  if (value === undefined) return fallback;
-  if ((typeof value !== 'string' && typeof value !== 'number') ||
-      (typeof value === 'string' && !/^\d+$/.test(value))) throw bad(`${name} must be an integer from ${min} to ${max}`);
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min || n > max) throw bad(`${name} must be an integer from ${min} to ${max}`);
-  return n;
-}
-
-function string(value, max, name) {
-  if (typeof value !== 'string' || value.length === 0 || value.length > max || /[\u0000-\u001f]/.test(value)) {
-    throw bad(`${name} must be a nonempty string of at most ${max} characters`);
-  }
-  return value;
-}
-
-function queryParams(url, allowed) {
-  const out = Object.create(null);
-  for (const [k, v] of url.searchParams) {
-    if (!allowed.includes(k) || Object.hasOwn(out, k)) throw bad('Unknown or repeated query parameter');
-    out[k] = v;
-  }
-  return out;
-}
-
-function parseFilter(raw) {
-  if (raw === undefined) return {};
-  if (raw.length > 16384) throw bad('filter is too large');
-  let filter;
-  try { filter = JSON.parse(raw); } catch { throw bad('filter must be a JSON object'); }
-  if (!object(filter) || Object.keys(filter).length > 20) throw bad('filter must be an object with at most 20 properties');
-  const scalar = (v) => v === null || typeof v === 'boolean' ||
-    (typeof v === 'string' && v.length <= 16384) ||
-    (typeof v === 'number' && Number.isFinite(v) && (!Number.isInteger(v) || Number.isSafeInteger(v)));
-  for (const [k, v] of Object.entries(filter)) {
-    string(k, 256, 'filter property');
-    if (!(scalar(v) || (Array.isArray(v) && v.length <= 256 && v.every(scalar)))) {
-      throw bad('filter values must be JSON scalars or arrays of scalars; integers must be safe JSON integers');
-    }
-  }
-  return filter;
-}
-
-function cursors(token) {
-  const key = createHmac('sha256', token).update('scene-graph-api/cursor/v1').digest();
-  const sign = (value) => createHmac('sha256', key).update(value).digest('base64url');
-  const scopeId = (scope) => createHash('sha256').update(JSON.stringify(scope)).digest('base64url');
-  return {
-    encode(after, scope) {
-      if (after === null || after === undefined) return null;
-      const data = Buffer.from(JSON.stringify({ v: 1, scope: scopeId(scope), after })).toString('base64url');
-      const result = `${data}.${sign(data)}`;
-      if (result.length > MAX_CURSOR) throw bad('The selected sort value is too large for pagination; choose another sort property');
-      return result;
-    },
-    decode(cursor, scope) {
-      if (cursor === undefined) return null;
-      if (typeof cursor !== 'string' || cursor.length > MAX_CURSOR || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(cursor)) throw bad('Invalid cursor');
-      const [data, signature] = cursor.split('.');
-      const expected = Buffer.from(sign(data));
-      const actual = Buffer.from(signature);
-      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw bad('Invalid cursor');
-      let decoded;
-      try { decoded = JSON.parse(Buffer.from(data, 'base64url').toString()); } catch { throw bad('Invalid cursor'); }
-      if (!object(decoded) || decoded.v !== 1 || decoded.scope !== scopeId(scope) || !Object.hasOwn(decoded, 'after')) throw bad('Cursor does not match this query');
-      return decoded.after;
-    },
-  };
-}
 
 async function jsonBody(req) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) throw new ApiError(415, 'unsupported_media_type', 'Use application/json');
@@ -96,10 +27,11 @@ async function jsonBody(req) {
   return result;
 }
 
-export function createApiServer({ store, token, onRequest = () => {} }) {
+export function createApiServer({ store, token, archive, onRequest = () => {} }) {
   if (typeof token !== 'string' || token.length < 32) throw new Error('GRAPH_API_TOKEN must have at least 32 characters');
   const expectedAuth = createHash('sha256').update(`Bearer ${token}`).digest();
   const cursor = cursors(token);
+  const mcp = createMcpHandler({ store, token, archive });
   const server = http.createServer({ maxHeaderSize: 64 * 1024 }, async (req, res) => {
     const started = performance.now();
     let route = 'unknown';
@@ -107,7 +39,7 @@ export function createApiServer({ store, token, onRequest = () => {} }) {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Expose-Headers', 'X-Graph-Consistency');
+    res.setHeader('Access-Control-Expose-Headers', 'X-Graph-Consistency, Content-Range, Accept-Ranges, ETag, X-Archive-SHA256, X-Archive-Media-ID');
     res.setHeader('X-Graph-Consistency', 'live');
     const send = (status, body) => {
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -116,10 +48,10 @@ export function createApiServer({ store, token, onRequest = () => {} }) {
     try {
       const url = new URL(req.url, 'http://graph.local');
       if (req.method === 'OPTIONS') {
-        if (!url.pathname.startsWith('/v1/graph/')) throw new ApiError(404, 'not_found', 'Route not found');
+        if (!url.pathname.startsWith('/v1/graph/') && url.pathname !== '/mcp' && !/^\/v1\/archive\/media\/media_[a-f0-9]{32}\/original$/.test(url.pathname)) throw new ApiError(404, 'not_found', 'Route not found');
         res.writeHead(204, {
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+          'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, Range, If-Range',
           'Access-Control-Max-Age': '600',
         });
         return res.end();
@@ -130,6 +62,23 @@ export function createApiServer({ store, token, onRequest = () => {} }) {
       if (!timingSafeEqual(supplied, expectedAuth)) {
         res.setHeader('WWW-Authenticate', 'Bearer');
         throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
+      }
+      if (url.pathname === '/mcp') {
+        route = 'mcp';
+        queryParams(url, []);
+        // Non-browser clients omit Origin; browsers must explicitly use a trusted origin.
+        if (req.headers.origin && !mcp.origins.has(req.headers.origin)) {
+          throw new ApiError(403, 'forbidden_origin', 'Origin is not allowed');
+        }
+        return await mcp.handle(req, res, req.method === 'POST' ? await jsonBody(req) : undefined);
+      }
+      const original = /^\/v1\/archive\/media\/(media_[a-f0-9]{32})\/original$/.exec(url.pathname);
+      if (original) {
+        route = 'video_original';
+        queryParams(url, []);
+        if (!['GET', 'HEAD'].includes(req.method)) throw new ApiError(405, 'method_not_allowed', 'Use GET or HEAD');
+        if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
+        return await archive.proxyOriginal(req, res, original[1]);
       }
       const match = /^\/v1\/graph\/entities\/([^/]+)(\/links)?$/.exec(url.pathname);
       if (url.pathname === '/v1/graph/entities') {
@@ -183,6 +132,7 @@ export function createApiServer({ store, token, onRequest = () => {} }) {
       throw new ApiError(404, 'not_found', 'Route not found');
     } catch (error) {
       if (res.destroyed || res.writableEnded) return;
+      if (res.headersSent) { res.destroy(); return; }
       if (error instanceof ApiError) return send(error.status, { error: { code: error.code, message: error.message } });
       // Never return or log driver messages, query text, tokens, or entity contents.
       const unavailable = typeof error?.code === 'string' && /Neo\.|ServiceUnavailable|SessionExpired/.test(error.code);

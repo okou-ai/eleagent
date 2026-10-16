@@ -4,6 +4,8 @@ import { once } from 'node:events';
 import http from 'node:http';
 import { after, before, describe, test } from 'node:test';
 import neo4j from 'neo4j-driver';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { GraphStore } from './graph.mjs';
 import { createApiServer } from './server.mjs';
 
@@ -139,6 +141,32 @@ describe('generic graph API against an isolated real Neo4j', {
       }
     }
     if (countFailure) throw countFailure;
+  });
+
+  test('standard MCP client queries the real graph without mutations', async () => {
+    const client = new Client({ name: 'real-neo4j-mcp-integration', version: '1.0.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }));
+      assert.equal((await client.listTools()).tools.length, 6);
+      const call = async (name, args) => {
+        const result = await client.callTool({ name, arguments: args });
+        assert.ok(!result.isError, JSON.stringify(result));
+        return result.structuredContent;
+      };
+      const search = await call('search_entities', { filter: { group: group('graph') }, limit: 2 });
+      assert.equal(search.entities.length, 2);
+      assert.ok(search.next_cursor);
+      const next = await call('search_entities', { filter: { group: group('graph') }, limit: 2, cursor: search.next_cursor });
+      assert.equal(next.entities.length, 2);
+      assert.ok(!next.entities.some((e) => search.entities.some((x) => x.id === e.id)));
+      assert.equal((await call('get_entity', { id: id('unknown') })).properties.arbitraryField, 'MagicValue is searchable');
+      assert.equal((await call('list_entity_links', { id: id('a') })).links.length, 3);
+      const graph = await call('get_subgraph', { ids: [id('a')], depth: 1 });
+      assert.equal(graph.entities.length, 4);
+      assert.deepEqual(await counts(), initialCounts);
+    } finally { await client.close(); }
   });
 
   async function request(path, { method = 'GET', body, authorization = `Bearer ${token}`, rawBody } = {}) {

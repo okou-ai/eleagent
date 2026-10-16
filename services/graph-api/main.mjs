@@ -2,6 +2,7 @@ import http from 'node:http';
 import neo4j from 'neo4j-driver';
 import { GraphStore } from './graph.mjs';
 import { createApiServer } from './server.mjs';
+import { ArchiveClient } from './archive.mjs';
 
 const token = process.env.GRAPH_API_TOKEN;
 const auth = process.env.NEO4J_AUTH || '';
@@ -19,7 +20,10 @@ const store = new GraphStore(driver, { timeoutMs: 5000 });
 const counts = new Map();
 const durations = new Map();
 let inShutdown = false;
-const server = createApiServer({ store, token, onRequest(route, status, seconds) {
+const archive = process.env.ARCHIVE_URL ? new ArchiveClient({
+  url: process.env.ARCHIVE_URL, token: process.env.SCENE_ARCHIVE_TOKEN,
+}) : undefined;
+const server = createApiServer({ store, token, archive, onRequest(route, status, seconds) {
   const key = `route="${route}",status="${status}"`;
   counts.set(key, (counts.get(key) || 0) + 1);
   const old = durations.get(route) || { count: 0, sum: 0 };

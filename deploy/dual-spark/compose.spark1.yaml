@@ -93,6 +93,9 @@ services:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
       GRAPH_URL: bolt://${SPARK1_ADDRESS}:7687
       GRAPH_API_TOKEN: ${GRAPH_API_TOKEN:?Generate the graph API token}
+      ARCHIVE_URL: http://${SPARK2_ADDRESS}:22401
+      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN:?Generate the shared archive token}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
       HOST: 127.0.0.1
       PORT: "22403"
       METRICS_PORT: "9208"
