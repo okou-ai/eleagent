@@ -33,7 +33,7 @@ before(async () => {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;
   client = new Client({ name: 'eleagent-mcp-test', version: '1.0.0' });
-  transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`));
+  transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } });
   await client.connect(transport);
 });
 after(async () => { await client?.close(); await new Promise((resolve) => server.close(resolve)); });
@@ -79,12 +79,13 @@ test('tool errors do not expose driver messages', async () => {
   assert.equal(result.isError, true); assert.ok(!JSON.stringify(result).includes('secret driver'));
   assert.equal(json(await call('get_entity', { id: 'missing' })).error.code, 'not_found');
 });
-test('MCP and original downloads need no authentication; Origin and legacy REST protections remain', async () => {
+test('legacy mode requires bearer authentication for MCP and originals; Origin remains guarded', async () => {
   const original = `/v1/archive/media/media_${'a'.repeat(32)}/original`;
   const denied = await fetch(`${origin}/mcp`, { method: 'POST', headers: { Origin: 'https://evil.invalid', 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(denied.status, 403);
-  assert.equal((await fetch(`${origin}/mcp`)).status, 405);
-  const video = await fetch(origin + original, { headers: { Range: 'bytes=0-2' } });
+  assert.equal((await fetch(`${origin}/mcp`)).status, 401);
+  assert.equal((await fetch(origin + original)).status, 401);
+  const video = await fetch(origin + original, { headers: { Authorization: `Bearer ${token}`, Range: 'bytes=0-2' } });
   assert.equal(video.status, 206); assert.equal(await video.text(), 'abc');
   assert.equal((await fetch(origin + '/v1/graph/entities')).status, 401);
 });

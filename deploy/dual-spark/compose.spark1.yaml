@@ -92,7 +92,11 @@ services:
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
       GRAPH_URL: bolt://${SPARK1_ADDRESS}:7687
-      GRAPH_API_TOKEN: ${GRAPH_API_TOKEN:?Generate the graph API token}
+      GRAPH_API_TOKEN: ${GRAPH_API_TOKEN:?Generate the graph API bootstrap and cursor key}
+      AUTH_PUBLIC_URL: ${AUTH_PUBLIC_URL:?Set the canonical public HTTPS origin for OAuth}
+      AUTH_DB_PATH: /data/auth/auth.sqlite
+      AUTH_SECRET_FILE: /data/auth/secret
+      AUTH_OWNER_EMAIL: ${AUTH_OWNER_EMAIL:-}
       ARCHIVE_URL: http://${SPARK2_ADDRESS}:22401
       SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN:?Generate the shared archive token}
       MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
@@ -100,6 +104,8 @@ services:
       PORT: "22403"
       METRICS_PORT: "9208"
       ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
+    volumes:
+      - ${DATA_ROOT}/auth:/data/auth
 
   sleep:
     image: local/eleagent-sleep:production

@@ -211,7 +211,7 @@ Conversion reads the source checkpoints read-only and writes a separate `atlas-o
 
 ### Private configuration
 
-New install: generate `.env` once, without printing the credentials, then edit `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE` and `ELEAGENT_OWNER_NAME`:
+New install: generate `.env` once, without printing the credentials, then edit `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE`, `ELEAGENT_OWNER_NAME`, `AUTH_PUBLIC_URL` (the public HTTPS origin) and optionally `AUTH_OWNER_EMAIL`:
 
 ```sh
 cp .env.example .env
@@ -230,7 +230,28 @@ PY
 
 Migration: create `.env` from the old deployment's values instead, as described in [preserving credentials](#preserving-credentials).
 
-Transfer the identical `.env` privately to the other host. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts. `SCENE_API_TOKEN` is the browser upload token; the archive and Graph API use separate tokens.
+Transfer the identical `.env` privately to the other host. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts. `SCENE_API_TOKEN` is the browser upload token; the archive credential remains internal. `GRAPH_API_TOKEN` is now only the first-owner setup key and graph cursor-signing key, not an OAuth access token.
+
+On Spark-1, create the dedicated auth volume as the host user matching container UID 1000. Preserve existing files when upgrading:
+
+```sh
+set -a; . ./.env; set +a
+install -d -m 700 "$DATA_ROOT/auth"
+python3 - <<'PY'
+import os, secrets
+from pathlib import Path
+path = Path(os.environ['DATA_ROOT']) / 'auth' / 'secret'
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    pass  # Never rotate an existing auth secret during deployment.
+else:
+    with os.fdopen(fd, 'w') as f:
+        f.write(secrets.token_urlsafe(48))
+PY
+```
+
+Compose persists `auth.sqlite`, WAL state and the secret together in this private directory. After startup, the owner opens `${AUTH_PUBLIC_URL}/auth/setup` and enters the existing graph API token as a setup key, their email, and a new password. Public signup is disabled; provisioning is one-time only. Never supply these secrets in chat, URLs, command arguments or committed files. The MCP endpoint is `${AUTH_PUBLIC_URL}/mcp` and uses browser OAuth authorization with PKCE. See the README authentication section for scopes and revocation. A public-origin change requires client reauthorization; the service never infers its issuer from incoming Host headers.
 
 ### Images
 
@@ -318,7 +339,9 @@ The new production `.env` must reuse the old deployment's values. Do not generat
 | Variable | Why it must be preserved |
 | --- | --- |
 | `SCENE_API_TOKEN` | Phones, bookmarks and QR codes already carry it |
-| `SCENE_ARCHIVE_TOKEN`, `GRAPH_API_TOKEN` | Existing internal clients and graph readers use them |
+| `SCENE_ARCHIVE_TOKEN` | Existing internal archive clients use it |
+| `GRAPH_API_TOKEN` | Preserves first-owner setup access and graph pagination signatures |
+| `AUTH_PUBLIC_URL` and `DATA_ROOT/auth` | Preserves OAuth issuer/resource identity, accounts, sessions, grants and signing secret |
 | `NEO4J_PASSWORD` | An existing database keeps its stored password; the container variable only sets the password of a new database |
 | `ELEAGENT_TIMEZONE` | Diary days, sleep dates and the night window are computed in it |
 | `ELEAGENT_OWNER_NAME` | Keeps the Sleep agent's owner identity unchanged |
@@ -383,7 +406,7 @@ On the Migration path, also confirm that the data was carried over before starti
 | Worker progress | Every observer, recognition, speech and OCR cursor equals the archive head; pending queues are empty or match the old values |
 | No reprocessing | Worker event counts do not jump after startup |
 | Identity data | Entity, sample and voice-identity counts equal the old deployment's |
-| Graph | `GET http://127.0.0.1:22403/v1/graph/entities` with the preserved `GRAPH_API_TOKEN` returns the old data |
+| Graph | Sign in and authorize an OAuth client at the configured public origin; the protected graph API returns the migrated data with a resource-bound `graph:read` access token. The old shared token is not an OAuth credential. |
 | Sleep state | `scheduler.json` shows the last day the old deployment slept |
 
 Then, with both managers `idle`, start the scheduler on Spark 1:

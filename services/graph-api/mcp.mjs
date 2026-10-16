@@ -1,9 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { z } from 'zod';
+import { z } from 'zod/v3';
 import { ApiError } from './graph.mjs';
 import { ArchiveError } from './archive.mjs';
 import { cursors, parseFilter } from './validation.mjs';
+
+export const TOOL_SCOPES = Object.freeze({ search_entities: 'graph:read', get_entity: 'graph:read', list_entity_links: 'graph:read', get_subgraph: 'graph:read', list_video_clips: 'media:read', get_video_clip: 'media:read' });
 
 const id = z.string().min(1).max(512).regex(/^[^\u0000-\u001f]+$/);
 const mediaId = z.string().regex(/^media_[a-f0-9]{32}$/);
@@ -58,7 +60,7 @@ export function createMcpHandler({ store, token, archive, allowedOrigins = proce
       if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
       return archive.listVideoClips(args, { store, signal: extra.signal });
     }],
-    ['get_video_clip', 'Get original video metadata and a public same-origin download URL by media_id. Optionally scope evidence references to entity_id. No client authentication is required; video bytes are not embedded in MCP output.', {
+    ['get_video_clip', 'Get original video metadata and a protected same-origin download URL by media_id. Optionally scope evidence references to entity_id. Downloads require OAuth access with media:read; video bytes are not embedded in MCP output.', {
       media_id: mediaId, entity_id: id.optional(),
     }, async (args, extra) => {
       if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
@@ -67,7 +69,7 @@ export function createMcpHandler({ store, token, archive, allowedOrigins = proce
   ];
   function buildServer() {
     const server = new McpServer({ name: 'eleagent', version: '0.1.0' }, {
-      instructions: 'Public read-only access to the Eleagent graph and original video references. Graph contents include fallible model interpretations. MCP and original downloads do not require client authentication.',
+      instructions: 'Read-only access to the Eleagent graph and original video references. Graph contents include fallible model interpretations. Graph tools require graph:read; media tools and original downloads require media:read. Never put access tokens in URLs.',
     });
     for (const [name, description, shape, run] of [...graphTools, ...videoTools]) {
       server.registerTool(name, { description, inputSchema: z.object(shape).strict(), annotations }, async (args, extra) => {

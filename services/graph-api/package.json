@@ -7,9 +7,16 @@
     "test": "node --test *.test.mjs"
   },
   "dependencies": {
+    "@better-auth/cimd": "1.7.10",
+    "@better-auth/mcp": "1.7.10",
+    "@better-auth/oauth-provider": "1.7.10",
     "@modelcontextprotocol/sdk": "1.32.1",
+    "better-auth": "1.7.10",
     "neo4j-driver": "6.2.0",
-    "zod": "3.25.76"
+    "zod": "4.6.7"
   },
-  "license": "AGPL-3.0-only"
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "jose": "6.2.12"
+  }
 }

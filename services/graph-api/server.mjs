@@ -2,7 +2,9 @@ import http from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { ApiError } from './graph.mjs';
 import { cursors, parseFilter, integer, string, queryParams } from './validation.mjs';
-import { createMcpHandler } from './mcp.mjs';
+import { createMcpHandler, TOOL_SCOPES } from './mcp.mjs';
+import { authRequest, sendAuthResponse, requireSameOrigin } from './auth-http.mjs';
+import { sendAuthPage, AUTH_CSS, AUTH_JS } from './auth-pages.mjs';
 
 const MAX_BODY = 32 * 1024;
 const bad = (message) => new ApiError(400, 'invalid_request', message);
@@ -27,11 +29,26 @@ async function jsonBody(req) {
   return result;
 }
 
-export function createApiServer({ store, token, archive, onRequest = () => {} }) {
+export function createApiServer({ store, token, archive, authService, authPublicUrl, onRequest = () => {} }) {
   if (typeof token !== 'string' || token.length < 32) throw new Error('GRAPH_API_TOKEN must have at least 32 characters');
   const expectedAuth = createHash('sha256').update(`Bearer ${token}`).digest();
   const cursor = cursors(token);
   const mcp = createMcpHandler({ store, token, archive });
+  if (authService && !authPublicUrl) throw new Error('OAuth requires an explicit public URL');
+  if (authService) mcp.origins.add(new URL(authPublicUrl).origin);
+  const requireBearer = (req, res) => {
+    const supplied = createHash('sha256').update((req.headers.authorization || '').replace(/^bearer /i, 'Bearer ')).digest();
+    if (!timingSafeEqual(supplied, expectedAuth)) {
+      res.setHeader('WWW-Authenticate', 'Bearer');
+      throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
+    }
+  };
+  const authorize = async (req, res, scopes) => {
+    if (!authService) { requireBearer(req, res); return true; }
+    const result = await authService.verify(await authRequest(req, authPublicUrl), { scopes });
+    if (result instanceof Response) { await sendAuthResponse(res, result); return false; }
+    return true;
+  };
   const server = http.createServer({ maxHeaderSize: 64 * 1024 }, async (req, res) => {
     const started = performance.now();
     let route = 'unknown';
@@ -39,7 +56,7 @@ export function createApiServer({ store, token, archive, onRequest = () => {} })
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Expose-Headers', 'X-Graph-Consistency, Content-Range, Accept-Ranges, ETag, X-Archive-SHA256, X-Archive-Media-ID');
+    res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate, DPoP-Nonce, X-Graph-Consistency, Content-Range, Accept-Ranges, ETag, X-Archive-SHA256, X-Archive-Media-ID');
     res.setHeader('X-Graph-Consistency', 'live');
     const send = (status, body) => {
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -48,13 +65,69 @@ export function createApiServer({ store, token, archive, onRequest = () => {} })
     try {
       const url = new URL(req.url, 'http://graph.local');
       if (req.method === 'OPTIONS') {
-        if (!url.pathname.startsWith('/v1/graph/') && url.pathname !== '/mcp' && !/^\/v1\/archive\/media\/media_[a-f0-9]{32}\/original$/.test(url.pathname)) throw new ApiError(404, 'not_found', 'Route not found');
+        if (!(authService && (url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/.well-known/'))) && !url.pathname.startsWith('/v1/graph/') && url.pathname !== '/mcp' && !/^\/v1\/archive\/media\/media_[a-f0-9]{32}\/original$/.test(url.pathname)) throw new ApiError(404, 'not_found', 'Route not found');
         res.writeHead(204, {
           'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, Range, If-Range',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, DPoP, Range, If-Range',
           'Access-Control-Max-Age': '600',
         });
         return res.end();
+      }
+      if (authService && (url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/.well-known/'))) {
+        route = 'auth_api';
+        // OAuth clients may omit Origin; browser calls must use configured trusted origins.
+        if (req.headers.origin && req.headers.origin !== new URL(authPublicUrl).origin && !mcp.origins.has(req.headers.origin)) {
+          throw new ApiError(403, 'forbidden_origin', 'Origin is not allowed');
+        }
+        const response = await authService.handler(await authRequest(req, authPublicUrl, { body: true }));
+        return await sendAuthResponse(res, response);
+      }
+      if (authService && url.pathname.startsWith('/auth/')) {
+        route = 'auth_page';
+        if (req.method === 'GET' && ['/auth/style.css', '/auth/app.js'].includes(url.pathname)) {
+          queryParams(url, []);
+          res.writeHead(200, { 'Content-Type': url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript', 'Cache-Control': 'no-store' });
+          return res.end(url.pathname.endsWith('.css') ? AUTH_CSS : AUTH_JS);
+        }
+        if (req.method === 'POST' && url.pathname === '/auth/setup') {
+          requireSameOrigin(req, authPublicUrl); queryParams(url, []);
+          const body = await jsonBody(req);
+          if (Object.keys(body).some((key) => !['email', 'password', 'bootstrapToken'].includes(key))) throw bad('Unknown setup field');
+          try { await authService.setupOwner(body); } catch { throw new ApiError(403, 'setup_denied', 'Account setup is unavailable or the supplied details are invalid'); }
+          return send(201, { ok: true });
+        }
+        if (url.pathname === '/auth/grants' && req.method === 'GET') {
+          queryParams(url, []);
+          try {
+            const grants = await authService.listGrants((await authRequest(req, authPublicUrl)).headers);
+            if (grants instanceof Response) return await sendAuthResponse(res, grants);
+            return send(200, grants);
+          } catch { throw new ApiError(401, 'unauthorized', 'Sign in to manage access'); }
+        }
+        if (url.pathname === '/auth/revoke' && req.method === 'POST') {
+          requireSameOrigin(req, authPublicUrl); queryParams(url, []);
+          const body = await jsonBody(req);
+          if (Object.keys(body).some((key) => key !== 'clientId')) throw bad('Unknown revoke field');
+          const clientId = string(body.clientId, 2048, 'clientId');
+          try {
+            const result = await authService.revokeGrant(clientId, (await authRequest(req, authPublicUrl)).headers);
+            if (result instanceof Response) return await sendAuthResponse(res, result);
+          } catch { throw new ApiError(403, 'revoke_denied', 'Sign in to revoke this application'); }
+          return send(200, { ok: true });
+        }
+        if (req.method === 'GET' && ['/auth/sign-in', '/auth/setup', '/auth/account', '/auth/consent'].includes(url.pathname)) {
+          if (url.pathname === '/auth/consent') {
+            const details = await authService.consentDetails(await authRequest(req, authPublicUrl));
+            if (details instanceof Response) return await sendAuthResponse(res, details);
+            return sendAuthPage(res, 'consent', details);
+          }
+          if (url.pathname === '/auth/account') {
+            const session = await authService.auth.api.getSession({ headers: (await authRequest(req, authPublicUrl)).headers });
+            if (!session) { res.writeHead(302, { Location: '/auth/sign-in' }); return res.end(); }
+          }
+          return sendAuthPage(res, url.pathname.slice('/auth/'.length));
+        }
+        throw new ApiError(404, 'not_found', 'Account route not found');
       }
       if (url.pathname === '/mcp') {
         route = 'mcp';
@@ -63,7 +136,11 @@ export function createApiServer({ store, token, archive, onRequest = () => {} })
         if (req.headers.origin && !mcp.origins.has(req.headers.origin)) {
           throw new ApiError(403, 'forbidden_origin', 'Origin is not allowed');
         }
-        return await mcp.handle(req, res, req.method === 'POST' ? await jsonBody(req) : undefined);
+        const body = req.method === 'POST' ? await jsonBody(req) : undefined;
+        const tool = body?.method === 'tools/call' ? body?.params?.name : undefined;
+        const scope = typeof tool === 'string' && Object.hasOwn(TOOL_SCOPES, tool) ? TOOL_SCOPES[tool] : undefined;
+        if (!await authorize(req, res, scope ? [scope] : [])) return;
+        return await mcp.handle(req, res, body);
       }
       const original = /^\/v1\/archive\/media\/(media_[a-f0-9]{32})\/original$/.exec(url.pathname);
       if (original) {
@@ -71,16 +148,10 @@ export function createApiServer({ store, token, archive, onRequest = () => {} })
         queryParams(url, []);
         if (!['GET', 'HEAD'].includes(req.method)) throw new ApiError(405, 'method_not_allowed', 'Use GET or HEAD');
         if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
+        if (!await authorize(req, res, ['media:read'])) return;
         return await archive.proxyOriginal(req, res, original[1]);
       }
-      // MCP and original downloads are intentionally public; legacy REST remains protected.
-      const authorization = req.headers.authorization || '';
-      const normalized = authorization.replace(/^bearer /i, 'Bearer ');
-      const supplied = createHash('sha256').update(normalized).digest();
-      if (!timingSafeEqual(supplied, expectedAuth)) {
-        res.setHeader('WWW-Authenticate', 'Bearer');
-        throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
-      }
+      if (!await authorize(req, res, ['graph:read'])) return;
       const match = /^\/v1\/graph\/entities\/([^/]+)(\/links)?$/.exec(url.pathname);
       if (url.pathname === '/v1/graph/entities') {
         route = 'entities';
