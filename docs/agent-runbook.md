@@ -420,6 +420,8 @@ The stopped graph-api ensures exactly one process writes its auth database. The 
 
 The owner opens `${AUTH_PUBLIC_URL}/auth/sign-in` and uses that email/password. After signing in, open `/auth/account` → **Change password**, enter the initial/current password and the new password twice (12–128 characters). The current session remains signed in and other browser sessions are revoked; the initial credentials file is not updated with the new password. Capture uses the secure HttpOnly session cookie; MCP clients use `${AUTH_PUBLIC_URL}/mcp` with Authorization Code + S256 PKCE, discovery and scoped OAuth tokens (`graph:read`, `media:read`). Resource endpoints do not accept browser cookies or old shared keys. Revoke connected applications at `/auth/account`; revocation also invalidates outstanding authorization codes and access/refresh credentials. Provider upgrades require rerunning the pinned-schema revocation regression tests.
 
+CIMD clients may serve their metadata and product homepage (`client_uri`) on different public origins, such as API and app subdomains. Eleagent permits this display-only field to be cross-origin while retaining same-origin binding for `post_logout_redirect_uris`. The official pinned HTTPS metadata-fetch transport, client-ID/document identity checks, public HTTP(S) homepage URL validation, explicit owner consent, S256 PKCE and exact registered OAuth redirect matching remain enforced. This policy does not add a trusted origin or authorize a callback based on the homepage URL.
+
 On the Migration path, also confirm that the data was carried over before starting `sleep`:
 
 | Check | Required result |

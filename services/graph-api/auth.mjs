@@ -11,6 +11,11 @@ import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 export const RESOURCE_SCOPES = Object.freeze(['graph:read', 'media:read']);
+// client_uri is a display/homepage URL, not a redirect or client identifier.
+// Distributed clients may serve metadata and their product on different origins
+// (CIMD draft-02 section 8.1 permits server policy here). Keep logout URLs bound;
+// registered OAuth redirects still require exact matching by the provider.
+export const CIMD_ORIGIN_BOUND_FIELDS = Object.freeze(['post_logout_redirect_uris']);
 const OAUTH_SCOPES = [...RESOURCE_SCOPES, 'offline_access'];
 
 function canonicalOrigin(value) {
@@ -101,7 +106,7 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
       rateLimit: { enabled: true, storage: 'database' },
       advanced: { useSecureCookies: origin.startsWith('https:'), database: { transaction: true } },
       logger: { disabled: true },
-      plugins: [jwt({ jwt: { issuer } }), provider, cimd({ fetchClientMetadataResource })],
+      plugins: [jwt({ jwt: { issuer } }), provider, cimd({ fetchClientMetadataResource, originBoundFields: CIMD_ORIGIN_BOUND_FIELDS })],
     });
     const migrations = await getMigrations(auth.options);
     await migrations.runMigrations();
