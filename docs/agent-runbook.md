@@ -74,7 +74,7 @@ Store the backup outside the active data root, with mode `0700`, on private stor
 
 1. **Inventory.** Record the old deployment's repository revision, container names, image IDs, mounts, restart policies, environment, Compose configuration and GPU-manager units. Keep it private: it contains credentials. Later phases need it for the cutover and for preserving credentials.
 2. **Quiesce.** Wait until any night run has finished and both GPU managers are idle with no lease. Stop both GPU managers. Stop capture ingress and Sleep on Spark 1; stop recognition, speech, OCR, Graph Sync and the archive on Spark 2. Confirm every writer has exited. Stop the Graph API and the graph database last.
-3. **Copy.** Copy each host's complete data directories, private `.env`, control token, manager configuration and any private TLS or reverse-proxy configuration. Preserve ownership, permissions and symlinks. Include SQLite `-wal` and `-shm` files. Resolve symlinks that point outside the copied roots and back up their targets too; a copied link does not preserve the bytes it references.
+3. **Copy.** Copy each host's complete data directories, private `.env`, control token, manager configuration and any private TLS or ingress configuration. Preserve ownership, permissions and symlinks. Include SQLite `-wal` and `-shm` files. Resolve symlinks that point outside the copied roots and back up their targets too; a copied link does not preserve the bytes it references.
 4. **Verify.** Compare SHA-256 for every regular file and every symlink target. Run `PRAGMA integrity_check` on every SQLite copy. Run `neo4j-admin database check` against a disposable copy of the backed-up store, using **the same Neo4j image as the old deployment** and the store owner's UID.
 5. **Receipt.** Record completion time, file count, byte count, checksums, database-check results and the stopped-writer inventory.
 
@@ -441,7 +441,7 @@ docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep
 
 Its first run is the next local night between 00:30 and 05:00 in `ELEAGENT_TIMEZONE`. Do not trigger a manual night run or change the timezone to force one.
 
-Keep internal listeners private. Only the HTTPS reverse proxy to the authenticated graph gateway is reachable by capture clients:
+Keep internal listeners private. Only the authenticated gateway, through the `AUTH_PUBLIC_URL` origin, is reachable by capture clients:
 
 | Listener | Bind |
 | --- | --- |
@@ -472,16 +472,8 @@ After the new stack is running, ask the owner before this step. Then:
 
 **Where:** Spark 1 and the owner's phone. **Repeatable:** yes.
 
-1. Phones allow camera and microphone access only over HTTPS. Terminate TLS in front of the authenticated gateway `127.0.0.1:22403` and forward **every path**, including `/auth/*`, `/api/auth/*`, `/.well-known/*`, `/mcp`, `/assets/*` and `POST /`. For example, with Caddy and a domain the owner controls:
-
-   ```caddyfile
-   capture.example.com {
-       reverse_proxy 127.0.0.1:22403
-   }
-   ```
-
-   A private VPN with a certificate the phone trusts also works. Never disable certificate validation. Confirm `GET /` over HTTPS from outside the private network.
-2. Give the owner the plain `https://<capture-host>/` URL (a QR may contain only that ordinary URL, no credentials). Anonymous visits redirect to email/password sign-in; sign-in returns to capture. Do not distribute service keys or create token fragments. After verifying the unified origin, retire old public tunnels that directly expose observer. Keep the internal observer/archive/GPU listeners private; do not deploy an authentication-removal branch.
+1. Phones allow camera and microphone access only on a secure origin. Make the authenticated gateway `127.0.0.1:22403` reachable at the HTTPS origin configured in `AUTH_PUBLIC_URL`, forwarding **every path**, including `/auth/*`, `/api/auth/*`, `/.well-known/*`, `/mcp`, `/assets/*` and `POST /`. How that origin is provided is the owner's choice. Never disable certificate validation. Confirm `GET /` over HTTPS from outside the private network.
+2. Give the owner the plain `https://<capture-host>/` URL (a QR may contain only that ordinary URL, no credentials). Anonymous visits redirect to email/password sign-in; sign-in returns to capture. Do not distribute service keys or create token fragments. After verifying the unified origin, retire old public tunnels that directly expose observer. Keep the internal observer/archive/GPU listeners private.
 3. The page starts recording as soon as it opens. The owner allows the camera, microphone and location, keeps the page in the foreground, and speaks normally for 10–15 seconds. The page has two controls: record/pause, and switching between the back and front cameras. Switching apps or locking the phone pauses recording, and returning to the page resumes it. Clips wait in the browser's bounded queue until the server confirms archival, so browser data must not be cleared while uploads are pending.
 4. Confirm on the servers: new clips archived, MiniCPM, recognition, OCR and speech events for them, a non-empty transcript, and queues draining. Short queues after a burst of buffered uploads are normal; a growing backlog is not.
 
