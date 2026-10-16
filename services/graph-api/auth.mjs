@@ -1,11 +1,9 @@
 import { betterAuth } from 'better-auth';
-import { jwt } from 'better-auth/plugins';
 import { getMigrations } from 'better-auth/db/migration';
 import { mcp } from '@better-auth/mcp';
 import { cimd } from '@better-auth/cimd';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { getOAuthProviderApi, verifyOAuthQueryParams } from '@better-auth/oauth-provider';
-import { createDpopReplayStore, enforceDpopBinding, parseAccessTokenAuthorization } from 'better-auth/oauth2';
 import { DatabaseSync } from 'node:sqlite';
 import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -16,7 +14,29 @@ export const RESOURCE_SCOPES = Object.freeze(['graph:read', 'media:read']);
 // (CIMD draft-02 section 8.1 permits server policy here). Keep logout URLs bound;
 // registered OAuth redirects still require exact matching by the provider.
 export const CIMD_ORIGIN_BOUND_FIELDS = Object.freeze(['post_logout_redirect_uris']);
-const OAUTH_SCOPES = [...RESOURCE_SCOPES, 'offline_access'];
+// One long-lived access token per authorization; there are no refresh tokens.
+// The owner ends access by revoking the application at /auth/account.
+export const ACCESS_TOKEN_LIFETIME_SECONDS = 60 * 60 * 24 * 365;
+
+// The only Better Auth routes reachable over HTTP. Everything else, including
+// introspection, token revocation, JWKS, userinfo, signup and client management, is 404.
+const PUBLIC_ROUTES = new Set([
+  'GET /api/auth/oauth2/authorize',
+  'POST /api/auth/oauth2/token',
+  'POST /api/auth/oauth2/register',
+  'POST /api/auth/oauth2/consent',
+  'POST /api/auth/sign-in/email',
+  'POST /api/auth/sign-out',
+  'GET /api/auth/get-session',
+  'POST /api/auth/change-password',
+  'GET /api/auth/error',
+]);
+const PROTECTED_RESOURCE_METADATA_PATHS = ['/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-protected-resource'];
+const AUTHORIZATION_SERVER_METADATA_PATH = '/.well-known/oauth-authorization-server/api/auth';
+
+function oauthError(error, description, status = 400) {
+  return json({ error, error_description: description }, status);
+}
 
 function canonicalOrigin(value) {
   let url;
@@ -72,24 +92,23 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
       resource,
       loginPage: '/auth/sign-in',
       consentPage: '/auth/consent',
-      scopes: OAUTH_SCOPES,
-      // Keep offline_access in persisted grant scopes so refreshes keep rotating.
-      // MCP protected-resource metadata filters this AS-only scope automatically.
-      resources: [{ identifier: resource, allowedScopes: OAUTH_SCOPES }],
+      scopes: RESOURCE_SCOPES,
+      resources: [{ identifier: resource, allowedScopes: RESOURCE_SCOPES }],
+      // refresh_token stays accepted in client metadata only so existing CIMD
+      // documents and DCR requests that list it still register. Without the
+      // offline_access scope no refresh token is ever issued, and the public
+      // token endpoint rejects the refresh grant.
       grantTypes: ['authorization_code', 'refresh_token'],
       // Resource-bound JWTs in 1.7.10 cannot be revoked, even via introspection.
       // This official option provides hashed opaque tokens and live revocation.
       disableJwtPlugin: true,
       storeTokens: 'hashed',
-      storeClientSecret: 'encrypted',
-      accessTokenExpiresIn: 3600,
-      refreshTokenExpiresIn: 60 * 60 * 24 * 30,
-      refreshTokenReuseInterval: 0,
+      accessTokenExpiresIn: ACCESS_TOKEN_LIFETIME_SECONDS,
       clientRegistrationRequirePKCE: true,
       allowDynamicClientRegistration: true,
       allowUnauthenticatedClientRegistration: true,
       clientRegistrationDefaultApplicationType: 'infer',
-      clientRegistrationDefaultScopes: OAUTH_SCOPES,
+      clientRegistrationDefaultScopes: RESOURCE_SCOPES,
       clientPrivileges: () => false,
       resourcePrivileges: () => false,
     });
@@ -106,7 +125,7 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
       rateLimit: { enabled: true, storage: 'database' },
       advanced: { useSecureCookies: origin.startsWith('https:'), database: { transaction: true } },
       logger: { disabled: true },
-      plugins: [jwt({ jwt: { issuer } }), provider, cimd({ fetchClientMetadataResource, originBoundFields: CIMD_ORIGIN_BOUND_FIELDS })],
+      plugins: [provider, cimd({ fetchClientMetadataResource, originBoundFields: CIMD_ORIGIN_BOUND_FIELDS })],
     });
     const migrations = await getMigrations(auth.options);
     await migrations.runMigrations();
@@ -146,7 +165,6 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
         throw error;
       }
     }
-    const replayStore = createDpopReplayStore(context.internalAdapter);
     const endpointContext = request => ({ context, request, headers: request.headers });
     const ownerId = () => database.prepare('SELECT user_id FROM graph_auth_owner WHERE singleton=1').get()?.user_id;
     const ownerSession = async request => {
@@ -194,17 +212,15 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
     async function verify(request, { scopes = [] } = {}) {
       if (closed) return json({ error: 'auth_unavailable' }, 503);
       if (!Array.isArray(scopes) || scopes.some(scope => !RESOURCE_SCOPES.includes(scope))) throw new TypeError('Unknown required resource scope');
-      let authorization;
       let claims;
       try {
-        authorization = parseAccessTokenAuthorization(request.headers.get('authorization'));
-        if (!authorization) return challenge(401, scopes);
-        // Local official introspection, not JWT-only verification: reads current DB state.
-        claims = await getOAuthProviderApi(endpointContext(request), providerOptions).requireActiveAccessToken(authorization.token);
+        const bearer = /^Bearer ([A-Za-z0-9._~+/-]+=*)$/i.exec(request.headers.get('authorization') ?? '');
+        if (!bearer) return challenge(401, scopes);
+        // Reads current DB state, so a revoked grant fails immediately.
+        claims = await getOAuthProviderApi(endpointContext(request), providerOptions).requireActiveAccessToken(bearer[1]);
         const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
         if (claims.iss !== issuer || !audience.includes(resource) || !claims.sub || claims.sub !== ownerId() ||
-            typeof claims.exp !== 'number' || claims.exp <= Math.floor(Date.now() / 1000)) return challenge(401, scopes, true);
-        await enforceDpopBinding({ payload: claims, authorization, proofJwt: request.headers.get('dpop'), method: request.method, url: request.url, replayStore });
+            typeof claims.exp !== 'number' || claims.exp <= Math.floor(Date.now() / 1000) || claims.cnf) return challenge(401, scopes, true);
         const consent = await consentFor(claims.sub, claims.client_id);
         const granted = typeof claims.scope === 'string' ? claims.scope.split(/\s+/).filter(Boolean) : [];
         if (!consent || granted.some(scope => !consent.scopes.includes(scope))) return challenge(401, scopes, true);
@@ -226,7 +242,7 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
       const clientId = params.get('client_id');
       const scopes = (params.get('scope') ?? '').split(/\s+/).filter(Boolean);
       const client = clientId && await getOAuthProviderApi(endpointContext(request), providerOptions).getClient(clientId);
-      if (!client || client.disabled || scopes.some(scope => !OAUTH_SCOPES.includes(scope) || !client.scopes?.includes(scope)) ||
+      if (!client || client.disabled || scopes.some(scope => !RESOURCE_SCOPES.includes(scope) || !client.scopes?.includes(scope)) ||
           params.get('resource') !== resource || params.getAll('resource').length !== 1 || params.has('claims')) return json({ error: 'invalid_oauth_query' }, 400);
       return { clientName: client.name || clientId, clientId, scopes, oauthQuery, resource };
     }
@@ -273,6 +289,61 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
       return auth.handler(request);
     }
 
+    const authorizationServerMetadata = {
+      issuer,
+      authorization_endpoint: `${issuer}/oauth2/authorize`,
+      token_endpoint: `${issuer}/oauth2/token`,
+      registration_endpoint: `${issuer}/oauth2/register`,
+      scopes_supported: RESOURCE_SCOPES,
+      response_types_supported: ['code'],
+      response_modes_supported: ['query'],
+      grant_types_supported: ['authorization_code'],
+      token_endpoint_auth_methods_supported: ['none'],
+      code_challenge_methods_supported: ['S256'],
+      authorization_response_iss_parameter_supported: true,
+      client_id_metadata_document_supported: true,
+    };
+    const protectedResourceMetadata = {
+      resource,
+      authorization_servers: [issuer],
+      bearer_methods_supported: ['header'],
+      scopes_supported: RESOURCE_SCOPES,
+    };
+
+    // HTTP entry point. Internal calls (owner revocation) use handler() directly.
+    async function publicHandler(request) {
+      if (closed) return json({ error: 'auth_unavailable' }, 503);
+      const url = new URL(request.url);
+      if (url.origin !== origin) return json({ error: 'invalid_origin' }, 400);
+      if (request.method === 'GET' && url.pathname === AUTHORIZATION_SERVER_METADATA_PATH) return json(authorizationServerMetadata);
+      if (request.method === 'GET' && PROTECTED_RESOURCE_METADATA_PATHS.includes(url.pathname)) return json(protectedResourceMetadata);
+      if (!PUBLIC_ROUTES.has(`${request.method} ${url.pathname}`)) return json({ error: 'not_found' }, 404);
+      // Bearer tokens only: no DPoP proofs or DPoP-bound authorization codes.
+      if (request.headers.has('dpop') || url.searchParams.has('dpop_jkt')) return oauthError('invalid_request', 'DPoP is not supported');
+      if (url.pathname === '/api/auth/oauth2/token') {
+        // Public clients only: PKCE replaces client secrets.
+        if (/^basic /i.test(request.headers.get('authorization') ?? '')) return oauthError('invalid_client', 'Only public clients (token_endpoint_auth_method "none") are supported', 401);
+        let form;
+        try { form = new URLSearchParams(await request.clone().text()); } catch { return oauthError('invalid_request', 'Invalid token request'); }
+        if (form.get('grant_type') !== 'authorization_code') return oauthError('unsupported_grant_type', 'Only the authorization_code grant is supported');
+        if (form.has('client_secret') || form.has('client_assertion')) return oauthError('invalid_client', 'Only public clients (token_endpoint_auth_method "none") are supported', 401);
+      }
+      if (url.pathname === '/api/auth/oauth2/register') {
+        let body;
+        try { body = await request.clone().json(); } catch { return oauthError('invalid_client_metadata', 'Registration body must be JSON'); }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return oauthError('invalid_client_metadata', 'Registration body must be a JSON object');
+        if (body.token_endpoint_auth_method !== undefined && body.token_endpoint_auth_method !== 'none') {
+          return oauthError('invalid_client_metadata', 'Only public clients (token_endpoint_auth_method "none") are supported');
+        }
+        if (body.dpop_bound_access_tokens) return oauthError('invalid_client_metadata', 'DPoP is not supported');
+        // RFC 7591 defaults to client_secret_basic when omitted; register a public client instead.
+        const headers = new Headers(request.headers);
+        headers.delete('content-length');
+        request = new Request(request, { headers, body: JSON.stringify({ ...body, token_endpoint_auth_method: 'none' }) });
+      }
+      return handler(request);
+    }
+
     async function listGrants(headers) {
       const request = new Request(`${origin}/auth/account`, { headers });
       const session = await ownerSession(request);
@@ -306,7 +377,7 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
 
     return {
       auth,
-      handler: request => serialized(() => handler(request)),
+      handler: request => serialized(() => publicHandler(request)),
       verify: (request, options) => serialized(() => verify(request, options)),
       revokeGrant: (clientId, headers) => serialized(() => revokeGrant(clientId, headers)),
       setupOwner, consentDetails, listGrants,

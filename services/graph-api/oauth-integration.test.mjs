@@ -54,14 +54,14 @@ test('official MCP OAuth SDK discovers, registers, authorizes, reads tools/media
   const state = randomBytes(24).toString('base64url');
   const provider = {
     redirectUrl: origin + '/synthetic-callback',
-    clientMetadata: { client_name: 'Actual SDK integration', redirect_uris: [origin + '/synthetic-callback'], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none', scope: 'graph:read media:read offline_access' },
+    clientMetadata: { client_name: 'Actual SDK integration', redirect_uris: [origin + '/synthetic-callback'], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none', scope: 'graph:read media:read' },
     state: () => state,
     clientInformation() { return this.info; }, saveClientInformation(value) { this.info = value; },
     tokens() { return this.savedTokens; }, saveTokens(value) { this.savedTokens = value; },
     redirectToAuthorization(value) { this.authorizationUrl = value; },
     saveCodeVerifier(value) { this.verifier = value; }, codeVerifier() { return this.verifier; },
   };
-  assert.equal(await sdkAuth(provider, { serverUrl: origin + '/mcp', scope: 'graph:read media:read offline_access' }), 'REDIRECT');
+  assert.equal(await sdkAuth(provider, { serverUrl: origin + '/mcp', scope: 'graph:read media:read' }), 'REDIRECT');
   const login = await browser(provider.authorizationUrl); assert.ok([200, 302].includes(login.status));
   const loginUrl = new URL(login.status === 302 ? login.headers.get('location') : (await login.json()).url, origin); assert.equal(loginUrl.pathname, '/auth/sign-in');
   assert.equal((await browser(loginUrl)).status, 200);
@@ -76,7 +76,8 @@ test('official MCP OAuth SDK discovers, registers, authorizes, reads tools/media
   const callback = new URL(consentResult.url || consentResult.redirect_uri); assert.equal(callback.searchParams.get('state'), state);
   assert.equal(callback.searchParams.get('iss'), origin + '/api/auth');
   assert.equal(await sdkAuth(provider, { serverUrl: origin + '/mcp', authorizationCode: callback.searchParams.get('code') }), 'AUTHORIZED');
-  assert.ok(provider.savedTokens.access_token); assert.ok(provider.savedTokens.refresh_token);
+  assert.ok(provider.savedTokens.access_token); assert.equal(provider.savedTokens.refresh_token, undefined);
+  assert.ok(provider.savedTokens.expires_in > 364 * 24 * 3600, 'access tokens are long-lived');
   client = new Client({ name: 'authenticated-tools-integration', version: '1.0.0' });
   await client.connect(new StreamableHTTPClientTransport(new URL(origin + '/mcp'), { authProvider: provider }));
   assert.equal((await client.listTools()).tools.length, 6);
