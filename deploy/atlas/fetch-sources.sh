@@ -14,6 +14,10 @@ source=json.load(open(sys.argv[1]))[sys.argv[2]]
 print(source['repository'], source['commit'], source['tree'])
 PY
 )
+  if [[ -n ${ATLAS_SOURCE_CACHE:-} ]]; then
+    repo="${ATLAS_SOURCE_CACHE%/}/$name.git"
+    [[ -d $repo ]] || { echo "Missing local source repository: $name" >&2; exit 2; }
+  fi
   git init -q "$destination"
   GIT_LFS_SKIP_SMUDGE=1 git -C "$destination" fetch -q --depth 1 "$repo" "$commit"
   GIT_LFS_SKIP_SMUDGE=1 git -C "$destination" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
@@ -29,4 +33,23 @@ cp -a "$context/product/install" "$context/install"
 cp "$context/install/dockerignore" "$context/.dockerignore"
 git -C "$context" apply --check "$here/public-native.patch"
 git -C "$context" apply "$here/public-native.patch"
+if [[ -n ${ATLAS_NATIVE_ARTIFACTS_DIR:-} ]]; then
+  # The Dockerfile still verifies every library against the public release hash.
+  # Keep the local replacement narrow: no server executable is copied.
+  python3 - "$context" "$ATLAS_NATIVE_ARTIFACTS_DIR" <<'PY'
+import pathlib, shutil, sys
+context, source = map(pathlib.Path, sys.argv[1:])
+source = source.resolve(strict=True) / 'opt/atlas'
+target = context / 'local-native/opt/atlas'
+for name in ('native', 'notices'):
+    shutil.copytree(source / name, target / name)
+(target / 'converter').mkdir()
+shutil.copy2(source / 'converter/libatlas_mtp_quantize.so', target / 'converter/libatlas_mtp_quantize.so')
+dockerfile = context / 'install/Dockerfile'
+text = dockerfile.read_text()
+line = next(line for line in text.splitlines() if line.endswith(' AS published-native'))
+text = text.replace(line, 'FROM scratch AS published-native\nCOPY local-native/opt/atlas/ /opt/atlas/', 1)
+dockerfile.write_text(text)
+PY
+fi
 printf '%s\n' "$context"

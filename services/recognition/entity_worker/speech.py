@@ -2,8 +2,8 @@
 
 Consecutive archived clips of one capture are stitched (real gaps capped at 0.5 s), split into
 speaker turns by voiceprint, matched to persistent `voice_*` entities, transcribed turn by turn,
-and written as `speech` timeline events plus entity samples. Only media ingested after the first
-start is processed; history is not reprocessed unless explicitly requested.
+and written as `speech` timeline events plus entity samples. First installation processes the
+archive backlog; later worker generations retain saved progress without replaying completed history.
 """
 from __future__ import annotations
 import argparse, hashlib, json, math, os, subprocess, tempfile, time
@@ -149,14 +149,7 @@ class SpeechWorker:
     def discover(self):
         cursor = self.store.config(self.cursor_key)
         if cursor is None and not self.reprocess_history:
-            # First start: begin at the current head; existing media keeps whatever analysis it has.
-            after = 0
-            while True:
-                page = self.feed(after); after = page['next_cursor']
-                if not page['has_more']:
-                    break
-            self.store.set_config(self.cursor_key, str(after))
-            return
+            cursor = self.store.inherit_feed_cursor(self.cursor_key, 'speech_cursor')
         after = int(cursor or 0)
         for _ in range(5):
             page = self.feed(after)

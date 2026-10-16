@@ -9,7 +9,7 @@ These files are an open-source deployment candidate. CPU service checks and ARM6
 - Two Linux ARM64 Spark hosts with Docker Engine, Docker Compose 2.30 or newer, and NVIDIA Container Toolkit.
 - A private network between the hosts, plus the network interface and HCA required by the Atlas runtime.
 - The same repository revision on both hosts, installed at `/opt/eleagent` if using the supplied systemd unit unchanged.
-- Model files prepared under `MODEL_ROOT` using `../models.lock.json` and the model download instructions.
+- Model files prepared under `MODEL_ROOT` using [the pinned model preparation guide](../models.md). Existing files can be verified and reused without downloading the weights again.
 - A host account with UID/GID 1000 and Docker access. The observer, recognition, speech, sleep, and GPU-manager processes must share UID 1000: pause, acknowledgement, readiness, and control-token files deliberately use mode 0600. Configure the supplied systemd unit's `User` and `Group` to that account. If choosing another UID, change all affected containers and host services together, including the sleep image's file ownership.
 
 ## Private configuration
@@ -151,16 +151,31 @@ docker compose --env-file .env -f compose.spark2.yaml build archive text graph-s
 
 Build `recognition` and `speech` on Spark 2. Their locked ARM64 dependencies include public CUDA 13 wheels. Upstream speech tokenizer dependencies may compile from source.
 
-Start Spark 2's services, then Spark 1's services on their respective hosts:
+```sh
+# Spark 2
+docker compose --env-file .env -f compose.spark2.yaml build recognition speech
+```
+
+For existing large dependencies, use the explicit cache options in [MiniCPM](../minicpm/README.md), [recognition](../../services/recognition/README.md#reusing-a-local-dependency-image), and [Atlas](../atlas/README.md#reusing-local-build-assets). Keep local cache paths and image IDs in private deployment records. These modes still build application source from this checkout; they do not prove a fresh installation of every base dependency.
+
+Start daytime services on their respective hosts, then enable sleep only after they are ready:
 
 ```sh
 # Spark 2
-docker compose --env-file .env -f compose.spark2.yaml up -d --build
-# Spark 1
-docker compose --env-file .env -f compose.spark1.yaml up -d --build
+docker compose --env-file .env -f compose.spark2.yaml up -d --no-build
+# Spark 1: hold the scheduler until daytime acceptance and both managers are ready.
+docker compose --env-file .env -f compose.spark1.yaml up -d --no-build graph minicpm observer graph-api
 ```
 
-Compose does not build MiniCPM or Atlas, nor install the host managers. Starting the stack enables the nightly scheduler; prepare both managers before starting `sleep`. Keep the private ports restricted to the intended hosts. Only the HTTPS reverse proxy should be reachable by capture clients.
+Confirm that Neo4j is healthy, the MiniCPM health endpoint reports `model_loaded: true`, and the recognition and speech workers have written fresh readiness markers. On each host, `python3 ../../runtime/gpu-manager/ready.py --config /etc/eleagent/gpu-manager.json` must exit successfully as the configured UID-1000 account. Check synthetic uploads and graph reads against an isolated deployment before using personal recordings.
+
+Then, on Spark 1:
+
+```sh
+docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep
+```
+
+Compose does not build MiniCPM or Atlas, nor install the host managers. Starting `sleep` enables the nightly scheduler immediately if the current local time is inside its acquisition window. Prepare both managers before this step. Keep the private ports restricted to the intended hosts. Only the HTTPS reverse proxy should be reachable by capture clients.
 
 | Listener | Bind / reachability |
 | --- | --- |
@@ -172,5 +187,7 @@ Compose does not build MiniCPM or Atlas, nor install the host managers. Starting
 | GPU managers | Each host's private address, `9210`; bearer authenticated |
 | GLM HTTP | Spark 1 loopback `8893` during sleep |
 | Metrics | Host loopback, ports specified in each Compose service |
+
+A worker with no saved cursor reads the existing archive from the beginning, so clips uploaded while its models load are retained. Restarts resume the saved cursor and pending queue. Deleting worker state therefore causes historical reprocessing.
 
 Do not delete or recreate the persistent data directories when updating images. Archive recordings, recognition state, graph data, and sleep state are user data; build caches and model downloads are separate.

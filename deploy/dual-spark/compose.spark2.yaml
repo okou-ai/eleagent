@@ -35,6 +35,9 @@ services:
     build:
       context: ../../services/recognition
       target: objects
+      args:
+        RECOGNITION_BASE_IMAGE: ${RECOGNITION_BASE_IMAGE:-python:3.12-slim}
+        REUSE_INSTALLED_TORCH: ${REUSE_INSTALLED_TORCH:-0}
     container_name: eleagent-recognition
     network_mode: host
     user: "1000:1000"
@@ -56,6 +59,9 @@ services:
     build:
       context: ../../services/recognition
       target: speech
+      args:
+        RECOGNITION_BASE_IMAGE: ${RECOGNITION_BASE_IMAGE:-python:3.12-slim}
+        REUSE_INSTALLED_TORCH: ${REUSE_INSTALLED_TORCH:-0}
     container_name: eleagent-speech
     network_mode: host
     user: "1000:1000"

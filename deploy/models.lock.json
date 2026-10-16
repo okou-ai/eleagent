@@ -22,7 +22,12 @@
       "directory": "MiniCPM-o-4_5",
       "license": "Apache-2.0",
       "role": "daytime perception",
-      "pin_evidence": "deployed snapshot verification manifest"
+      "pin_evidence": "deployed snapshot verification manifest",
+      "optional_file_patterns": [
+        "assets/audio_cases/*",
+        "assets/Skiing.mp4",
+        "assets/omni_duplex*.mp4"
+      ]
     },
     {
       "id": "glm-5.3-flash-nvfp4",
@@ -42,7 +47,7 @@
       "repository": "https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2",
       "provider": "huggingface",
       "repo_id": "incoai/GLM-5.3-Flash-DFlash2",
-      "revision": "bf582e4eacc1810f76656d1811693ff6c6737d2a",
+      "revision": "7d74cdd881ed7e32c31175984a67823127b66cfe",
       "directory": "glm-5.3-flash-atlas/incoai--GLM-5.3-Flash-DFlash2",
       "license": "CC-BY-NC-ND-4.0",
       "role": "speculative decoding draft model",
@@ -51,8 +56,9 @@
       "restricted": true,
       "requires_explicit_acceptance": true,
       "commercial_use": false,
-      "pin_evidence": "public upstream metadata read on 2026-10-16; local deployment has no retained revision metadata",
-      "note": "The provided Atlas recipe requires this drafter. The whole recipe is optional research functionality; omitting the drafter does not produce a supported configuration."
+      "pin_evidence": "All local weight bytes matched this exact upstream revision on both Spark hosts on 2026-10-16",
+      "note": "The provided Atlas recipe requires this drafter. This profile pins the release checkpoint used with the pinned engine; later upstream checkpoint updates need separate validation. The whole recipe is optional research functionality; omitting the drafter does not produce a supported configuration.",
+      "sha256": "8931dc522be0aa31760a7463f8d2f8044fa3e6d40be2e87aa08e9fd17bfd6683"
     },
     {
       "id": "qwen3-asr-1.7b",

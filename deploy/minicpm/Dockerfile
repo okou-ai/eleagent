@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Build context: the pinned upstream checkout prepared by build.sh.
 ARG MINICPM_BASE_IMAGE
 FROM ${MINICPM_BASE_IMAGE}
@@ -11,9 +10,11 @@ RUN python3 -c 'import platform, sys, torch; assert platform.machine() == "aarch
 ENV PATH=/opt/minicpm-venv/bin:$PATH
 COPY eleagent-build-requirements.lock /tmp/build-requirements.lock
 COPY eleagent-requirements.lock /tmp/requirements.lock
+COPY eleagent-install-locked.py /tmp/install-locked.py
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-deps --require-hashes -r /tmp/build-requirements.lock \
-    && pip install --no-deps --no-build-isolation --require-hashes -r /tmp/requirements.lock
+    --mount=type=bind,from=wheelhouse,target=/opt/eleagent-wheelhouse \
+    python /tmp/install-locked.py /tmp/build-requirements.lock /opt/eleagent-wheelhouse \
+    && python /tmp/install-locked.py /tmp/requirements.lock /opt/eleagent-wheelhouse --no-build-isolation --force-reinstall
 COPY . .
 RUN chmod +x /app/eleagent-entrypoint.sh \
     && mkdir -p /app/data /app/tmp /app/torch_compile_cache

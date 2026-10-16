@@ -95,7 +95,7 @@ model_root=$(realpath "$model_root")
 overlay="$model_root/atlas-overlay"
 checkpoint="$model_root/nvidia--GLM-5.3-Flash-NVFP4"
 drafter="$model_root/incoai--GLM-5.3-Flash-DFlash2"
-for path in "$checkpoint/config.json" "$drafter/config.json" "$overlay/sparkglm-verified.json"; do
+for path in "$checkpoint/config.json" "$drafter/config.json" "$overlay/sparkglm-verified.json" "$overlay/eleagent-overlay.json"; do
   [[ -f $path ]] || { echo "missing $path" >&2; exit 2; }
 done
 mkdir -p "$cache"

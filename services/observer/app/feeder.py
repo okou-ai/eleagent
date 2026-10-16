@@ -93,22 +93,11 @@ class ArchiveFeeder:
         response.raise_for_status()
         return response.json()
 
-    async def initial_cursor(self):
-        # First start: begin at the end of the feed; clips archived before this service existed are history.
-        cursor = 0
-        while True:
-            page = await self.feed_page(cursor)
-            cursor = page['next_cursor']
-            if not page['has_more']:
-                return cursor
-
     async def poll(self):
         row = self.db.execute('SELECT cursor FROM feed_cursor WHERE id = 0').fetchone()
-        if row is None:
-            with self.db:
-                self.db.execute('INSERT INTO feed_cursor VALUES (0, ?)', (await self.initial_cursor(),))
-            return
-        cursor = row[0]
+        # A fresh worker must include clips uploaded before it finished starting.
+        # Existing workers retain their durable cursor and pending work on restart.
+        cursor = row[0] if row is not None else 0
         while True:
             page = await self.feed_page(cursor)
             items = [item for item in page['items'] if not item['capture_id'].startswith(SKIP_CAPTURE_PREFIXES)]
@@ -116,7 +105,8 @@ class ArchiveFeeder:
                 self.db.executemany('INSERT OR IGNORE INTO pending VALUES (?,?,?,?,?,?)', [
                     (item['media_id'], item['capture_id'], item['clip_seq'], item['captured_at'],
                      float(item['duration_seconds']), item['archived_at']) for item in items])
-                self.db.execute('UPDATE feed_cursor SET cursor = ? WHERE id = 0', (page['next_cursor'],))
+                self.db.execute('INSERT INTO feed_cursor VALUES (0, ?) '
+                    'ON CONFLICT(id) DO UPDATE SET cursor = excluded.cursor', (page['next_cursor'],))
             if self.service.situation:
                 for item in items:
                     # Arrival rate of new media sets the output budget (keep up with what is being recorded).

@@ -31,6 +31,23 @@ explicit `librosa>=0.10.2` requirement, so the application retains the deployed
 bash deploy/minicpm/build.sh
 ```
 
+Set `MINICPM_WHEELHOUSE=/absolute/path/to/wheels` to reuse previously downloaded
+wheel and source archives. Keep their original filenames. The installer replaces
+matching artifact URLs with local files and retains the lock's SHA-256 checks;
+missing packages still download normally. The build mounts this directory as a
+read-only BuildKit context instead of including it in the final image.
+`MINICPM_SOURCE_DIR` may point to an existing Git checkout containing the pinned
+upstream commit. The build verifies its commit and tree, then exports that commit;
+uncommitted files are never copied into the image.
+
+For an offline application check, `MINICPM_CACHED_BASE_IMAGE` can name an existing
+local **dependency-only** image with ARM64 Python 3.12, CUDA 13 PyTorch, FFmpeg,
+and curl. The script resolves and records its image ID before building the pinned
+application source. Use this instead of `MINICPM_BASE_IMAGE`, never together.
+This checks the application against a cached environment; it does **not** prove
+that `base.Dockerfile` builds on a clean host. Preserve the cache image's origin
+and package inventory in your private deployment records.
+
 The default build composes the public base and application into one multi-stage
 build. `build-base.sh` optionally builds only the base. To use a separately
 reviewed public base instead, set `MINICPM_BASE_IMAGE` to an immutable public

@@ -33,7 +33,7 @@ def fetch(relative, url, expected_sha=None, expected_size=None):
 
 
 def main():
-    ROOT.mkdir(exist_ok=True)
+    ROOT.mkdir(parents=True, exist_ok=True)
     model_url = f'https://github.com/ultralytics/assets/releases/download/{YOLOE_RELEASE}/yoloe-26l-seg-pf.pt'
     dino = f'https://huggingface.co/facebook/dinov2-small/resolve/{DINO_REVISION}/'
     files = {

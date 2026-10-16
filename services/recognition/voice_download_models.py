@@ -24,12 +24,13 @@ def verified_write(path, payload, checksum):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights-dir", type=Path, default=Path(__file__).parent / "weights")
+    parser.add_argument("--skip-ecapa", action="store_true", help="Prepare only the required Silero weight")
     args = parser.parse_args()
     root = args.weights_dir
     root.mkdir(parents=True, exist_ok=True)
     url = f"https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/{ECAPA_REVISION}/embedding_model.ckpt"
     path = root / "voice_ecapa.ckpt"
-    if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != ECAPA_SHA256:
+    if not args.skip_ecapa and (not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != ECAPA_SHA256):
         with urllib.request.urlopen(url, timeout=120) as response:
             verified_write(path, response.read(90 * 1024 * 1024), ECAPA_SHA256)
     dist = importlib.metadata.distribution("silero-vad")
@@ -39,11 +40,12 @@ def main():
     verified_write(root / "voice_silero.jit", silero.read_bytes(), SILERO_SHA256)
     manifest = {
         "preprocessing": PREPROCESSING,
-        "ecapa": {"url": url, "sha256": ECAPA_SHA256, "revision": ECAPA_REVISION,
-                  "license": "Apache-2.0", "filename": "voice_ecapa.ckpt"},
         "silero": {"package": "silero-vad==6.2.1", "sha256": SILERO_SHA256,
                    "license": "MIT", "filename": "voice_silero.jit"},
     }
+    if not args.skip_ecapa:
+        manifest["ecapa"] = {"url": url, "sha256": ECAPA_SHA256, "revision": ECAPA_REVISION,
+                             "license": "Apache-2.0", "filename": "voice_ecapa.ckpt"}
     (root / "voice_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest))
 

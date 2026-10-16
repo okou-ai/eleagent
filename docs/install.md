@@ -2,6 +2,8 @@
 
 Eleagent is an experimental two-host reference system. The initial profile targets two NVIDIA DGX Spark machines running Linux ARM64. It does not include model weights, personal recordings, credentials, or a hosted account.
 
+Before replacing an existing deployment, make and verify a [consistent backup](backup-and-restore.md). Use empty data directories for deployment acceptance.
+
 ## Prepare the stack
 
 1. Clone this repository onto both hosts at the same revision.
