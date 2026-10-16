@@ -1,87 +1,94 @@
-import { CaptureState, CLIP_MS, MAX_CLIP_BYTES, MAX_QUEUE_BYTES, MAX_QUEUE_CLIPS, recorderType, uploadDisposition } from './capture-state.js';
+import { CaptureState, CLIP_MS, MAX_CLIP_BYTES, bufferHasRoom, bufferRecovered, captureCamera, formatAgo, formatElapsed,
+  newCaptureId, recorderType, resumesAutomatically, uploadDisposition } from './capture-state.js';
 import { openQueue } from './queue.js';
 
 const $ = id => document.getElementById(id);
+const TOKEN_KEY = 'eleagent-token';
+const CAMERA_KEY = 'eleagent-camera';
+const STORAGE_FULL = 'Storage full';
 const state = new CaptureState();
-let queue, stream, recorder, wakeLock, clipTimer, locationWatch, locationFix, sessionCamera;
-let recordingLoop, releaseTab, uploadTimer, uploading = false, uploadBlocked = false, ready = false, starting = false;
-let pending = { count: 0, bytes: 0 }, requestingWake = false;
+let queue, stream, recorder, wakeLock, clipTimer, locationWatch, locationFix, ticker, releaseTab, uploadTimer;
+let session = null, ready = false, flipping = false, uploading = false, requestingWake = false;
+let fatal = null, problem = null, blocked = null, uploadIssue = null;
+let pending = { count: 0, bytes: 0 };
+let recordedMs = 0, recordingSince = 0;
+let observation = null, observationTag = null, observationTimer, observing = false;
+let token = remembered(TOKEN_KEY)?.trim() || '';
+let camera = remembered(CAMERA_KEY) === 'front' ? 'front' : 'back';
 
+function remembered(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function remember(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* Private browsing can refuse storage; the value still lasts this visit. */ }
+}
+
+// The access token only arrives through a private link. It is kept on this device and never shown.
 function consumeTokenLink() {
-  const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
-  if (token === null) return;
-  $('token').value = token;
+  const linked = new URLSearchParams(window.location.hash.slice(1)).get('token');
+  if (linked === null) return;
   history.replaceState(history.state, '', window.location.pathname + window.location.search);
-  uploadBlocked = false;
+  if (linked.trim().length < 16) return;
+  token = linked.trim();
+  remember(TOKEN_KEY, token);
+  blocked = null;
   clearTimeout(uploadTimer);
   render();
-  if (ready) {
-    const hasToken = token.trim().length >= 16;
-    message(hasToken
-      ? (pending.count ? 'Access token is ready. Pending clips will upload when connected.' : 'Access token is ready.')
-      : 'Enter your service access token first.', !hasToken);
-    void upload();
-  }
+  void pollObservation();
+  if (!ready) return;
+  void upload();
+  // A newly scanned link is a request to record unless the owner paused deliberately.
+  if (state.pauseReason !== 'user_pause') void start();
 }
 consumeTokenLink();
 
-function message(text, error = false) {
-  $('message').textContent = text;
-  $('message').classList.toggle('error', error);
+function elapsed() {
+  return recordedMs + (recordingSince ? performance.now() - recordingSince : 0);
+}
+function statusView() {
+  if (fatal) return { text: fatal, tone: 'error' };
+  if (!ready) return { text: '' };
+  if (!token) return { text: 'Scan your capture link', tone: 'error' };
+  if (blocked === 'auth') return { text: 'Link rejected · Scan again', tone: 'error' };
+  if (blocked === 'clip') return { text: 'Upload rejected', tone: 'error' };
+  let view;
+  if (state.phase === 'recording' && !flipping) view = { text: formatElapsed(elapsed()), tone: 'live' };
+  else if (problem) view = { text: problem, tone: 'error' };
+  else if (state.phase === 'paused' && !flipping) view = { text: 'Paused' };
+  else view = { text: 'Starting' };
+  if (uploadIssue && pending.count) view.text += ` · ${pending.count} waiting`;
+  return view;
 }
 function render() {
-  const active = state.phase === 'recording';
-  $('capture-status').textContent = { idle: 'Ready', acquiring: 'Opening camera', recording: 'Recording', paused: 'Paused' }[state.phase];
-  $('capture-status').classList.toggle('active', active);
-  $('live-badge').hidden = !active;
-  $('start').textContent = state.phase === 'paused' ? 'Resume recording' : 'Start recording';
-  $('start').disabled = !ready || !['idle', 'paused'].includes(state.phase) || !!recordingLoop || starting || $('token').value.trim().length < 16 || uploadBlocked;
-  $('pause').disabled = !['recording', 'acquiring'].includes(state.phase);
-  $('stop').disabled = state.phase === 'idle' && !recordingLoop;
-  $('camera').disabled = state.phase !== 'idle' || !!recordingLoop;
-  $('location').disabled = state.phase !== 'idle' || !!recordingLoop;
-  $('retry').disabled = !ready || !pending.count || uploading || $('token').value.trim().length < 16;
-  $('discard').disabled = !ready || !pending.count || uploading || state.phase !== 'idle' || !!recordingLoop;
-  $('queue-status').textContent = `${pending.count} clips · ${(pending.bytes / 1024 / 1024).toFixed(1)} / 128 MiB`;
+  const view = statusView();
+  $('status').textContent = view.text;
+  $('status').dataset.tone = view.tone || '';
+  const active = ['recording', 'acquiring'].includes(state.phase) || flipping;
+  $('shutter').classList.toggle('recording', active);
+  $('shutter').setAttribute('aria-label', active ? 'Pause' : 'Record');
+  $('shutter').disabled = !ready || !token || !!blocked || !!fatal;
+  $('flip').disabled = !ready || !!fatal || flipping;
 }
 async function refreshQueue() {
   pending = await queue.stats();
   render();
 }
-function hasRoom() {
-  // Reserve one maximum-size clip before starting so a full buffer never drops a completed clip.
-  return pending.count < MAX_QUEUE_CLIPS && pending.bytes + MAX_CLIP_BYTES <= MAX_QUEUE_BYTES;
-}
+
 async function requestWakeLock() {
-  if (!navigator.wakeLock) {
-    $('wake-status').textContent = 'Unavailable — adjust auto-lock';
-    return;
-  }
-  if (state.phase !== 'recording' || document.hidden || wakeLock || requestingWake) return;
+  if (!navigator.wakeLock || state.phase !== 'recording' || document.hidden || wakeLock || requestingWake) return;
   requestingWake = true;
   try {
     const lock = await navigator.wakeLock.request('screen');
     if (state.phase !== 'recording' || document.hidden) { await lock.release(); return; }
     wakeLock = lock;
-    $('wake-status').textContent = 'Kept awake';
-    lock.addEventListener('release', () => {
-      if (wakeLock === lock) {
-        wakeLock = null;
-        $('wake-status').textContent = state.phase === 'recording' ? 'Released by system' : 'Not requested';
-      }
-    });
-  } catch {
-    $('wake-status').textContent = 'Unavailable — adjust auto-lock';
-  } finally { requestingWake = false; }
-}
-function releaseWakeLock() {
-  const lock = wakeLock;
-  wakeLock = null;
-  lock?.release().catch(() => {});
-  $('wake-status').textContent = 'Not requested';
+    lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+  } catch { /* Some browsers grant the lock only after a tap; the next tap retries. */ } finally { requestingWake = false; }
 }
 function stopDevices() {
   clearTimeout(clipTimer);
+  clearInterval(ticker);
+  if (recordingSince) recordedMs += performance.now() - recordingSince;
+  recordingSince = 0;
   if (recorder?.state !== 'inactive') {
     try { recorder?.stop(); } catch { /* A track end may have already stopped the recorder. */ }
   }
@@ -91,39 +98,28 @@ function stopDevices() {
   stream?.getTracks().forEach(track => track.stop());
   stream = null;
   $('preview').srcObject = null;
-  $('preview-placeholder').hidden = false;
-  releaseWakeLock();
+  const lock = wakeLock;
+  wakeLock = null;
+  lock?.release().catch(() => {});
 }
-function pause(reason = 'user_pause') {
+function pause(reason, interruption = 'Camera interrupted') {
   if (!['recording', 'acquiring'].includes(state.phase)) return;
   state.pause(reason);
   stopDevices();
-  message(reason === 'page_hidden' ? 'Capture paused when the page left the foreground. Tap Resume to begin a new segment.' :
-    reason === 'buffer_full' ? 'Local buffer is nearly full. Capture is paused; let uploads finish, then tap Resume.' :
-    reason === 'capture_interrupted' ? 'Capture was interrupted. Check camera access, then tap Resume.' : 'Capture paused. Pending clips continue uploading.');
-  render();
-}
-function stop() {
-  state.stop();
-  stopDevices();
-  message('Camera and microphone are off. Pending clips continue uploading.');
+  problem = reason === 'buffer_full' ? STORAGE_FULL : reason === 'capture_interrupted' ? (problem || interruption) : null;
   render();
 }
 function watchLocation() {
-  if (!$('location').checked || !navigator.geolocation) return;
-  $('location-status').textContent = 'Requesting location permission…';
+  if (!navigator.geolocation) return;
   locationWatch = navigator.geolocation.watchPosition(position => {
     const c = position.coords;
     locationFix = { captured_at: new Date(position.timestamp).toISOString(), latitude: c.latitude, longitude: c.longitude,
       accuracy_m: c.accuracy, altitude_m: c.altitude, altitude_accuracy_m: c.altitudeAccuracy,
       heading_deg: Number.isFinite(c.heading) ? c.heading : null, speed_mps: Number.isFinite(c.speed) && c.speed >= 0 ? c.speed : null };
-    $('location-status').textContent = `Location included (accuracy about ${Math.round(c.accuracy)} m). No device motion.`;
-  }, () => {
-    locationFix = null;
-    $('location-status').textContent = 'Location unavailable. Recording continues without it.';
-  }, { enableHighAccuracy: false, maximumAge: 10_000, timeout: 15_000 });
+  }, () => { locationFix = null; }, { enableHighAccuracy: false, maximumAge: 10_000, timeout: 15_000 });
 }
-function recordOne(activeStream, camera) {
+
+function recordOne(activeStream, lens) {
   return new Promise((resolve, reject) => {
     const mimeType = recorderType(MediaRecorder);
     const current = new MediaRecorder(activeStream, { ...(mimeType ? { mimeType } : {}), videoBitsPerSecond: 1_200_000, audioBitsPerSecond: 64_000 });
@@ -133,7 +129,7 @@ function recordOne(activeStream, camera) {
     current.onstart = () => {
       if (state.phase !== 'recording') { current.stop(); return; }
       started = performance.now();
-      meta = state.clip(camera);
+      meta = state.clip(lens);
       if (locationFix && Date.now() - Date.parse(locationFix.captured_at) < 30_000) meta.locations.push(locationFix);
       clipTimer = setTimeout(() => { if (current.state === 'recording') current.stop(); }, CLIP_MS);
     };
@@ -143,13 +139,13 @@ function recordOne(activeStream, camera) {
       clearTimeout(clipTimer);
       if (recorder === current) recorder = null;
       if (!meta) { resolve(null); return; }
-      const elapsed = performance.now() - started;
+      const duration = performance.now() - started;
       meta.captured_end_at = new Date().toISOString();
       if (failed) { reject(new Error('recording_failed')); return; }
       // Mobile browsers can defer timers while suspended. Never disguise a long segment as a five-second clip.
-      if (elapsed > 6400) { reject(new Error('recording_suspended')); return; }
+      if (duration > 6400) { reject(new Error('recording_suspended')); return; }
       const blob = new Blob(parts, { type: current.mimeType || parts[0]?.type || 'application/octet-stream' });
-      if (elapsed < 200 || !blob.size) { resolve(null); return; }
+      if (duration < 200 || !blob.size) { resolve(null); return; }
       if (blob.size > MAX_CLIP_BYTES) { reject(new Error('clip_too_large')); return; }
       resolve({ meta, blob });
     };
@@ -157,13 +153,12 @@ function recordOne(activeStream, camera) {
     current.start();
   });
 }
-async function captureLoop(activeStream, epoch) {
+async function captureLoop(activeStream, epoch, lens) {
   try {
     while (state.phase === 'recording' && state.epoch === epoch) {
       await refreshQueue();
-      if (!hasRoom()) { pause('buffer_full'); break; }
-      if (state.phase !== 'recording' || state.epoch !== epoch) break;
-      const clip = await recordOne(activeStream, sessionCamera);
+      if (!bufferHasRoom(pending)) { pause('buffer_full'); break; }
+      const clip = await recordOne(activeStream, lens);
       if (clip) {
         await queue.add(clip.meta, clip.blob);
         await refreshQueue();
@@ -171,78 +166,104 @@ async function captureLoop(activeStream, epoch) {
       }
     }
   } catch (error) {
-    pause(error.message === 'buffer_full' ? 'buffer_full' : 'capture_interrupted');
-    const storageError = error.name === 'QuotaExceededError';
-    message(storageError ? 'Browser storage is full. The last segment could not be saved; capture has stopped.' :
-      'Capture stopped because the last segment could not be safely saved. A recording gap is present. Resume when ready.', true);
+    if (error.message === 'buffer_full') pause('buffer_full');
+    else pause('capture_interrupted', error.name === 'QuotaExceededError' ? STORAGE_FULL : 'Recording stopped');
   } finally {
-    if (state.phase === 'recording') pause('capture_interrupted');
+    if (state.phase === 'recording' && state.epoch === epoch) pause('capture_interrupted');
   }
 }
-async function start() {
-  if (!ready || recordingLoop || starting || document.hidden || !['idle', 'paused'].includes(state.phase)) return;
-  if ($('token').value.trim().length < 16) { message('Enter your service access token first.', true); return; }
-  starting = true;
-  render();
-  try { await refreshQueue(); } catch {
-    starting = false;
-    ready = false;
-    message("The local buffer could not be read. Capture is disabled to protect pending clips.", true);
+
+function start() {
+  session ||= record().finally(() => {
+    session = null;
     render();
-    return;
-  }
-  if (document.hidden || !ready) { starting = false; render(); return; }
-  if (!hasRoom()) { message('The local buffer is nearly full. Upload or discard pending clips before recording.', true); starting = false; render(); return; }
-  sessionCamera = $('camera').value;
-  const id = state.phase === 'paused' ? state.captureId : `web-${crypto.randomUUID()}-${sessionCamera}`;
-  const epoch = state.acquire(id);
+    resumeIfAllowed();
+  });
+  return session;
+}
+async function record() {
+  if (!ready || !token || blocked || fatal || !['idle', 'paused'].includes(state.phase)) return;
+  // A start requested in the background waits for the page to return.
+  if (document.hidden) { state.pause('page_hidden'); return; }
+  try { await refreshQueue(); } catch { fatal = 'Storage unavailable'; ready = false; return; }
+  if (!bufferHasRoom(pending)) { problem = STORAGE_FULL; return; }
+  // Resuming the same lens continues its capture; a different lens is a new capture.
+  const resume = state.phase === 'paused' && captureCamera(state.captureId) === camera;
+  const epoch = state.acquire(resume ? state.captureId : newCaptureId(camera));
+  problem = null;
   render();
-  message('Allow camera and microphone access to begin.');
   try {
-    const acquired = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: sessionCamera === 'front' ? 'user' : 'environment' },
+    const acquired = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: camera === 'front' ? 'user' : 'environment' },
       width: { ideal: 960 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 24 } }, audio: true });
     if (document.hidden) state.pause('page_hidden');
     if (!state.activate(epoch)) { acquired.getTracks().forEach(track => track.stop()); return; }
     stream = acquired;
-    const actualFacing = acquired.getVideoTracks()[0]?.getSettings().facingMode;
-    if (actualFacing === 'user') sessionCamera = 'front';
-    if (actualFacing === 'environment') sessionCamera = 'back';
-    // The observer also reads the camera direction from the capture identity.
-    state.captureId = state.captureId.replace(/-(front|back)$/, `-${sessionCamera}`);
+    const facing = acquired.getVideoTracks()[0]?.getSettings().facingMode;
+    const lens = facing === 'user' ? 'front' : facing === 'environment' ? 'back' : camera;
+    if (lens !== captureCamera(state.captureId) && state.nextSeq === 0) {
+      state.captureId = state.captureId.replace(/-(front|back)$/, `-${lens}`);
+    }
+    camera = lens;
     acquired.getTracks().forEach(track => track.addEventListener('ended', () => pause('capture_interrupted')));
+    $('preview').classList.toggle('mirrored', lens === 'front');
     $('preview').srcObject = acquired;
-    $('preview-placeholder').hidden = true;
     await $('preview').play().catch(() => {});
     if (state.phase !== 'recording' || state.epoch !== epoch) { stopDevices(); return; }
+    recordingSince = performance.now();
+    ticker = setInterval(render, 500);
     void requestWakeLock();
     watchLocation();
-    message('Recording independent five-second segments. Keep this page in the foreground.');
     render();
-    recordingLoop = captureLoop(acquired, epoch);
-    await recordingLoop;
-  } catch {
+    await captureLoop(acquired, epoch, lens);
+  } catch (error) {
     if (state.epoch === epoch) {
       state.pause('capture_interrupted');
       stopDevices();
-      message('Camera or microphone access failed. Check browser permissions, then tap Resume.', true);
+      problem = error?.name === 'NotAllowedError' ? 'Allow camera access' : 'Camera unavailable';
     }
-  } finally {
-    recordingLoop = null;
-    starting = false;
-    render();
   }
 }
-async function upload() {
-  if (!ready || uploading || uploadBlocked || !navigator.onLine || $('token').value.trim().length < 16) return;
-  uploading = true;
-  clearTimeout(uploadTimer);
+function resumeIfAllowed() {
+  if (session || flipping || !ready || !token || blocked || fatal || document.hidden) return;
+  if (problem === STORAGE_FULL || state.pauseReason === 'buffer_full') {
+    if (bufferRecovered(pending)) void start();
+  } else if (state.phase === 'idle' ? !problem : state.phase === 'paused' && resumesAutomatically(state.pauseReason)) {
+    void start();
+  }
+}
+function toggle() {
+  if (['recording', 'acquiring'].includes(state.phase)) pause('user_pause');
+  else void start();
+}
+async function flip() {
+  if (!ready || flipping) return;
+  camera = camera === 'back' ? 'front' : 'back';
+  remember(CAMERA_KEY, camera);
+  $('flip').classList.toggle('turned');
+  // While paused, or before a pending start acquires the camera, the next start uses the new lens.
+  if (!['recording', 'acquiring'].includes(state.phase)) { render(); return; }
+  flipping = true;
   render();
   try {
-    while (!uploadBlocked && navigator.onLine) {
+    // Finish the current clip, then start a new capture on the other lens.
+    pause('user_pause');
+    await session;
+  } finally {
+    flipping = false;
+  }
+  void start();
+}
+
+async function upload() {
+  if (!ready || uploading || blocked || !token) return;
+  if (!navigator.onLine) { uploadIssue = 'offline'; render(); return; }
+  uploading = true;
+  clearTimeout(uploadTimer);
+  try {
+    while (!blocked && navigator.onLine) {
       const item = await queue.first();
       if (!item) break;
-      const token = $('token').value.trim();
-      if (token.length < 16) break;
+      const sent = token;
       const body = new FormData();
       body.set('meta', JSON.stringify(item.meta));
       body.set('video', item.blob, item.blob.type.includes('webm') ? 'clip.webm' : 'clip.mp4');
@@ -250,16 +271,15 @@ async function upload() {
       const timeout = setTimeout(() => abort.abort(), 70_000);
       let response;
       try {
-        response = await fetch('/', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body, signal: abort.signal, credentials: 'omit' });
+        response = await fetch('/', { method: 'POST', headers: { Authorization: `Bearer ${sent}` }, body, signal: abort.signal, credentials: 'omit' });
       } finally { clearTimeout(timeout); }
       if (!response.ok) {
         const disposition = uploadDisposition(response.status);
-        if (disposition === 'auth' && token !== $('token').value.trim()) continue;
+        if (disposition === 'auth' && sent !== token) continue;
         if (disposition === 'auth' || disposition === 'blocked') {
-          uploadBlocked = true;
+          // A rejected clip stays in the local buffer; reloading or a new link retries it.
+          blocked = disposition === 'auth' ? 'auth' : 'clip';
           pause('capture_interrupted');
-          message(disposition === 'auth' ? 'Access token was rejected. Enter the correct token, then retry uploads.' :
-            `A clip was rejected (HTTP ${response.status}). It remains in the local buffer; inspect the service before retrying.`, true);
           break;
         }
         throw new Error('retry_upload');
@@ -269,11 +289,13 @@ async function upload() {
         throw new Error('archive_receipt_missing');
       }
       await queue.remove(item);
-      $('last-upload').textContent = new Date(item.meta.captured_end_at).toLocaleTimeString() + ' · confirmed by archive';
+      uploadIssue = null;
       await refreshQueue();
+      resumeIfAllowed();
     }
+    if (!navigator.onLine) uploadIssue = 'offline';
   } catch {
-    message('Upload is waiting for the connection or archive. Saved clips remain in the local buffer.', true);
+    uploadIssue = 'retry';
     if (navigator.onLine) uploadTimer = setTimeout(() => void upload(), 5000);
   } finally {
     uploading = false;
@@ -281,30 +303,47 @@ async function upload() {
   }
 }
 
-$('start').addEventListener('click', () => void start());
-$('pause').addEventListener('click', () => pause());
-$('stop').addEventListener('click', stop);
-$('retry').addEventListener('click', () => { uploadBlocked = false; void upload(); render(); });
-$('token').addEventListener('input', () => { uploadBlocked = false; clearTimeout(uploadTimer); render(); });
-$('token').addEventListener('change', () => void upload());
-$('discard').addEventListener('click', async () => {
-  if (uploading || state.phase !== 'idle' || recordingLoop) return;
-  if (!confirm('Permanently discard all pending clips from this browser? Clips already archived are unaffected.')) return;
+// The latest MiniCPM observation is polled separately from uploads, so it keeps updating while paused.
+async function pollObservation() {
+  clearTimeout(observationTimer);
+  if (observing || document.hidden || !token || blocked === 'auth') return;
+  observing = true;
   try {
-    await queue.clear();
-    uploadBlocked = false;
-    await refreshQueue();
-    message('Pending clips were discarded from this browser.');
-  } catch { message('Could not clear local storage.', true); }
-});
+    const response = await fetch('/v1/observations/latest', { cache: 'no-store', credentials: 'omit',
+      headers: { Authorization: `Bearer ${token}`, ...(observationTag ? { 'If-None-Match': observationTag } : {}) } });
+    if (response.status === 200) {
+      observation = await response.json();
+      observationTag = response.headers.get('ETag');
+    } else if (response.status === 204) {
+      observation = observationTag = null;
+    }
+  } catch { /* Keep the last observation; the next poll retries. */ } finally { observing = false; }
+  renderObservation();
+  if (!document.hidden) observationTimer = setTimeout(() => void pollObservation(), 3000);
+}
+function renderObservation() {
+  $('observation').hidden = !observation;
+  if (!observation) return;
+  const at = Date.parse(observation.captured_to || observation.observed_at);
+  $('observation-age').textContent = Number.isFinite(at) ? formatAgo(at) : '';
+  if ($('observation-text').textContent !== observation.text) $('observation-text').textContent = observation.text;
+}
+setInterval(renderObservation, 1000);
+
+$('shutter').addEventListener('click', toggle);
+$('flip').addEventListener('click', () => void flip());
+document.addEventListener('pointerdown', () => void requestWakeLock());
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) pause('page_hidden');
-  else { void upload(); if (state.phase === 'recording') void requestWakeLock(); }
+  if (document.hidden) { pause('page_hidden'); return; }
+  void upload();
+  void pollObservation();
+  resumeIfAllowed();
+  void requestWakeLock();
 });
-window.addEventListener('focus', () => { if (state.phase === 'recording') void requestWakeLock(); });
+window.addEventListener('focus', () => void requestWakeLock());
 window.addEventListener('hashchange', consumeTokenLink);
-window.addEventListener('online', () => void upload());
-window.addEventListener('offline', () => message('Offline. Clips are stored locally until the connection returns.'));
+window.addEventListener('online', () => { uploadIssue = null; render(); void upload(); });
+window.addEventListener('offline', () => { uploadIssue = 'offline'; render(); });
 window.addEventListener('pagehide', () => { pause('page_hidden'); ready = false; releaseTab?.(); });
 window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 window.addEventListener('beforeunload', event => {
@@ -313,27 +352,27 @@ window.addEventListener('beforeunload', event => {
 
 async function initialize() {
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.indexedDB || !navigator.locks) {
-    message('Use a current browser over HTTPS. Camera recording, IndexedDB, and Web Locks are required.', true);
+    fatal = 'Open in Safari or Chrome over HTTPS';
+    render();
     return;
   }
   // One tab owns capture and uploads. This prevents two pages from deleting or sending the same local queue.
   await navigator.locks.request('eleagent-capture-owner', { ifAvailable: true }, async lock => {
-    if (!lock) { message('Eleagent is already open in another tab. Close that tab, then reload this page.', true); return; }
+    if (!lock) { fatal = 'Already open in another tab'; render(); return; }
     try {
       queue = await openQueue();
       ready = true;
       await refreshQueue();
-      const hasToken = $('token').value.trim().length >= 16;
-      message(pending.count
-        ? (hasToken ? 'Pending clips were restored. Uploads will resume when connected.' : 'Pending clips were restored. Enter your access token to resume uploads.')
-        : (hasToken ? 'Access token is ready. Choose a camera and start when ready.' : 'Enter your access token, choose a camera, and start when ready.'));
-      if (hasToken && pending.count) void upload();
+      void upload();
+      resumeIfAllowed();
       await new Promise(resolve => { releaseTab = resolve; });
     } catch {
       ready = false;
-      message('Local browser storage is unavailable. Enable storage before recording.', true);
+      fatal = 'Storage unavailable';
       render();
     }
   });
 }
+render();
+void pollObservation();
 void initialize();

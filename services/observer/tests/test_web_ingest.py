@@ -112,6 +112,25 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post(token='wrong')).status_code, 401)
         self.assertEqual((await self.client.get('/assets/requirements.txt')).status_code, 404)
 
+    async def test_latest_observation_is_authenticated_cached_and_survives_restart(self):
+        headers = {'Authorization': 'Bearer ' + TOKEN}
+        self.assertEqual((await self.client.get('/v1/observations/latest')).status_code, 401)
+        self.assertEqual((await self.client.get('/v1/observations/latest', headers=headers)).status_code, 204)
+        self.service.context_from, self.service.context_to = '2026-01-05T17:30:00+00:00', '2026-01-05T17:30:05+00:00'
+        self.service.save_turn({'generated_text': '   ', 'source_packets': []})
+        self.assertEqual((await self.client.get('/v1/observations/latest', headers=headers)).status_code, 204)
+        self.service.save_turn({'generated_text': ' VISUAL: A person writes at a desk. AUDIO: silence. ', 'source_packets': []})
+        response = await self.client.get('/v1/observations/latest', headers=headers)
+        self.assertEqual(response.status_code, 200)
+        latest = response.json()
+        self.assertEqual(latest['text'], 'VISUAL: A person writes at a desk. AUDIO: silence.')
+        self.assertEqual((latest['captured_from'], latest['captured_to']), ('2026-01-05T17:30:00+00:00', '2026-01-05T17:30:05+00:00'))
+        self.assertEqual(set(latest), {'id', 'text', 'captured_from', 'captured_to', 'observed_at'})
+        unchanged = await self.client.get('/v1/observations/latest', headers={**headers, 'If-None-Match': response.headers['etag']})
+        self.assertEqual(unchanged.status_code, 304)
+        self.assertEqual(oct(self.service.latest_path.stat().st_mode & 0o777), '0o600')
+        self.assertEqual(self.service.load_latest(), latest)
+
     async def test_streaming_webm_without_container_duration_is_archived_and_decoded(self):
         metadata, duration = await probe_clip(self.media['webm'])
         self.assertEqual(metadata['duration_source'], 'packet_timestamps')
