@@ -44,16 +44,7 @@ Original project code is AGPL-3.0-only unless a file states otherwise. Dependenc
 
 ## References
 
-Only research that directly informed Eleagent's core design is listed below. These are functional design influences, not claims that Eleagent reproduces biological mechanisms, implements the papers' algorithms, or inherits their experimental results.
-
-| Core design decision | Research influence | Implementation |
-| --- | --- | --- |
-| Keep selected memories and source links in the graph, with original media retained separately in the archive. | Hippocampal indexing [1]. | [Archive](services/archive) and [Sleep evidence tools](services/sleep/extensions/memory.ts). |
-| Separate fast online perception from slower offline integration into long-term memory. | Complementary learning systems [2]. | [Observer](services/observer) and [nightly Sleep agent](services/sleep). |
-| Consolidate perceptual fragments into reusable entity memories; allow low-value fragments to fade while retaining original recordings. | Abstraction across experiences [3] and the functional role of forgetting [4]. | [Sleep prompt: consolidation and forgetting](services/sleep/prompts/sleep.md). |
-| Organize meaningful occurrences as semantic events, not simply as fixed-duration capture buckets. | Event segmentation [5]. | [Sleep prompt: events, intervals, and dates](services/sleep/prompts/sleep.md). |
-| Feed recent context and recalled memories back into perception, with attention expressed in terms of the current activity. | Context-dependent cognitive control [6] and task-guided attention [7]. | [Online situation context and perception prompt](services/observer/app/situation.py). |
-| Distinguish observed evidence, reported speech, and interpretation, including whether speech comes from an in-person interaction or a device. | Source monitoring [8]. | [Perception prompt](services/observer/app/situation.py) and [Sleep evidence rules](services/sleep/prompts/sleep.md). |
+These studies directly informed Eleagent's core design; they do not imply algorithm reproduction, biological equivalence, or validation of Eleagent.
 
 [1] T. J. Teyler and P. DiScenna, “The hippocampal memory indexing theory,” *Behavioral Neuroscience*, vol. 100, no. 2, pp. 147–154, 1986, doi: [10.1037/0735-7044.100.2.147](https://doi.org/10.1037/0735-7044.100.2.147).
 
@@ -70,3 +61,15 @@ Only research that directly informed Eleagent's core design is listed below. The
 [7] M. F. Land and M. Hayhoe, “In what ways do eye movements contribute to everyday activities?,” *Vision Research*, vol. 41, nos. 25–26, pp. 3559–3565, 2001, doi: [10.1016/S0042-6989(01)00102-X](https://doi.org/10.1016/S0042-6989(01)00102-X).
 
 [8] M. K. Johnson, S. Hashtroudi, and D. S. Lindsay, “Source monitoring,” *Psychological Bulletin*, vol. 114, no. 1, pp. 3–28, 1993, doi: [10.1037/0033-2909.114.1.3](https://doi.org/10.1037/0033-2909.114.1.3).
+
+<details>
+<summary>Design notes and implementation links</summary>
+
+- **Source-linked memory [1].** The graph retains selected memories and links; original media stays in the [archive](services/archive), accessible through [Sleep tools](services/sleep/extensions/memory.ts).
+- **Day / night integration [2].** Fast [online perception](services/observer) feeds slower [nightly consolidation](services/sleep).
+- **Abstraction and forgetting [3, 4].** [Sleep](services/sleep/prompts/sleep.md) consolidates fragments into reusable memories and lets low-value fragments fade, without deleting recordings.
+- **Semantic events [5].** [Sleep](services/sleep/prompts/sleep.md) groups meaningful occurrences beyond fixed-duration capture buckets.
+- **Context-guided attention [6, 7].** [Online situation context](services/observer/app/situation.py) feeds recent observations and recalled memories back into activity-oriented perception.
+- **Source monitoring [8].** The [perception prompt](services/observer/app/situation.py) and [Sleep evidence rules](services/sleep/prompts/sleep.md) distinguish observations, reported speech, and interpretation—including device audio versus in-person speech.
+
+</details>
