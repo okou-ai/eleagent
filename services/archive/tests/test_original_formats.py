@@ -10,7 +10,7 @@ from app.archive_api import install_archive_routes
 def test_original_storage_and_response_formats(tmp_path):
     archive = Archive(str(tmp_path / 'archive.sqlite3'), str(tmp_path / 'media'), reserve_bytes=0)
     app = FastAPI()
-    install_archive_routes(app, archive, lambda: None)
+    install_archive_routes(app, archive)
     with TestClient(app) as client:
         for sequence, (content_type, extension) in enumerate([
             ('video/quicktime', '.mov'), ('video/webm', '.webm'), ('video/mp4', '.mp4'),

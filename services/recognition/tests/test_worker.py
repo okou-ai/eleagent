@@ -36,7 +36,7 @@ def test_actual_face_model_original_checksum_pts_and_archive_timeline(tmp_path):
         '-threads','1','-pix_fmt','yuv420p','-c:a','aac','-shortest',str(source)],check=True,timeout=30)
     archive=Archive(tmp_path/'archive.sqlite',tmp_path/'originals',reserve_bytes=0)
     archive.put_clip(source,'capture-a',0,'2026-10-09T16:00:00Z',duration_seconds=2.2)
-    app=FastAPI(); install_archive_routes(app,archive,lambda:None); api=TestClient(app)
+    app=FastAPI(); install_archive_routes(app,archive); api=TestClient(app)
     def transport(request):
         response=api.request(request.method,request.url.path,params=dict(request.url.params),content=request.content,
             headers={'Content-Type':request.headers.get('content-type','application/json')})
