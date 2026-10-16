@@ -7,6 +7,14 @@ let queue, stream, recorder, wakeLock, clipTimer, locationWatch, locationFix, se
 let recordingLoop, releaseTab, uploadTimer, uploading = false, uploadBlocked = false, ready = false, starting = false;
 let pending = { count: 0, bytes: 0 }, requestingWake = false;
 
+{
+  const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
+  if (token !== null) {
+    $('token').value = token;
+    history.replaceState(history.state, '', window.location.pathname + window.location.search);
+  }
+}
+
 function message(text, error = false) {
   $('message').textContent = text;
   $('message').classList.toggle('error', error);
@@ -303,7 +311,11 @@ async function initialize() {
       queue = await openQueue();
       ready = true;
       await refreshQueue();
-      message(pending.count ? 'Pending clips were restored. Enter your access token to resume uploads.' : 'Enter your access token, choose a camera, and start when ready.');
+      const hasToken = $('token').value.trim().length >= 16;
+      message(pending.count
+        ? (hasToken ? 'Pending clips were restored. Uploads will resume when connected.' : 'Pending clips were restored. Enter your access token to resume uploads.')
+        : (hasToken ? 'Access token is ready. Choose a camera and start when ready.' : 'Enter your access token, choose a camera, and start when ready.'));
+      if (hasToken && pending.count) void upload();
       await new Promise(resolve => { releaseTab = resolve; });
     } catch {
       ready = false;
