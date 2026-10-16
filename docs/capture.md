@@ -2,7 +2,7 @@
 
 Serve the web UI and ingest endpoint at the same HTTPS origin. Configure `SCENE_API_TOKEN` on the observer and enter that access token in the capture page. The token is not embedded in public assets.
 
-To prefill the token, open `https://your-host.example/#token=<URL-encoded-access-token>` or encode that URL in a private QR code. The page reads and removes the fragment before initialization; fragments are not sent to the server. The token remains in memory for the current visit, and pending uploads resume when connected. Recording still requires tapping **Start recording**.
+To prefill the token, open `https://your-host.example/#token=<URL-encoded-access-token>` or encode that URL in a private QR code. The page reads and removes the fragment before initialization, or when the link reuses an already open page; fragments are not sent to the server. The token remains in memory for the current visit, and pending uploads resume when connected. Recording still requires tapping **Start recording**.
 
 ## Upload
 

@@ -7,13 +7,23 @@ let queue, stream, recorder, wakeLock, clipTimer, locationWatch, locationFix, se
 let recordingLoop, releaseTab, uploadTimer, uploading = false, uploadBlocked = false, ready = false, starting = false;
 let pending = { count: 0, bytes: 0 }, requestingWake = false;
 
-{
+function consumeTokenLink() {
   const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
-  if (token !== null) {
-    $('token').value = token;
-    history.replaceState(history.state, '', window.location.pathname + window.location.search);
+  if (token === null) return;
+  $('token').value = token;
+  history.replaceState(history.state, '', window.location.pathname + window.location.search);
+  uploadBlocked = false;
+  clearTimeout(uploadTimer);
+  render();
+  if (ready) {
+    const hasToken = token.trim().length >= 16;
+    message(hasToken
+      ? (pending.count ? 'Access token is ready. Pending clips will upload when connected.' : 'Access token is ready.')
+      : 'Enter your service access token first.', !hasToken);
+    void upload();
   }
 }
+consumeTokenLink();
 
 function message(text, error = false) {
   $('message').textContent = text;
@@ -244,6 +254,7 @@ async function upload() {
       } finally { clearTimeout(timeout); }
       if (!response.ok) {
         const disposition = uploadDisposition(response.status);
+        if (disposition === 'auth' && token !== $('token').value.trim()) continue;
         if (disposition === 'auth' || disposition === 'blocked') {
           uploadBlocked = true;
           pause('capture_interrupted');
@@ -291,6 +302,7 @@ document.addEventListener('visibilitychange', () => {
   else { void upload(); if (state.phase === 'recording') void requestWakeLock(); }
 });
 window.addEventListener('focus', () => { if (state.phase === 'recording') void requestWakeLock(); });
+window.addEventListener('hashchange', consumeTokenLink);
 window.addEventListener('online', () => void upload());
 window.addEventListener('offline', () => message('Offline. Clips are stored locally until the connection returns.'));
 window.addEventListener('pagehide', () => { pause('page_hidden'); ready = false; releaseTab?.(); });
