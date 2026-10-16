@@ -44,7 +44,6 @@ See [the capture protocol](docs/capture.md), [installation](docs/install.md), an
 | `services/sleep` | Pi memory tools, prompts and nightly consolidation |
 | `runtime/gpu-manager` | Host GPU leases, draining and recovery |
 | `deploy` | Versioned model and hardware recipes |
-| `examples/synthetic-day` | Entirely fictional San Francisco workday |
 
 The local model route has a configured 524,288-token context window. A long synthetic retrieval request succeeded in the original deployment; this is not a general accuracy or concurrency guarantee. The deployment validation completed a scheduled GLM/Pi run that inspected images and saved a conversation, event and diary. Broader prompt quality, full-night reliability, and clean builds on every supported platform remain unverified. See [limitations](docs/limitations.md).
 

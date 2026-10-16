@@ -40,7 +40,7 @@ See the dated [deployment validation record](deployment-validation.md) for the e
 
 - Open `GET /` and the browser's developer console. The page should load with no external script dependencies.
 - An unauthenticated `POST /` should return `401`.
-- Use [synthetic media](../examples/synthetic-day/README.md) and a separate empty test archive for upload checks. Do not insert fixtures into a personal memory database.
+- Use a short test recording and a separate empty test archive for upload checks. Do not insert test recordings into a personal memory database.
 - Confirm the archive stores MP4/WebM with the correct content type and duplicate uploads return the same durable receipt.
 - Confirm each GPU manager reports its actual daytime state before enabling the sleep scheduler.
 
