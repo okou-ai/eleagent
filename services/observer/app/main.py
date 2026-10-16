@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from fastapi import FastAPI, Depends, Header, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from typing import Literal
 from starlette.datastructures import UploadFile
 import hashlib
@@ -254,6 +254,17 @@ def create_app(settings=None, backend_factory=None):
                       'rr_*': 'deg/s', 'ax..az': 'm/s2 user acceleration', 'gx..gz': 'm/s2 including gravity'},
             'source': 'ios_core_motion_via_expo_sensors',
         }, dict(event_id=event_id, capture_id=meta.capture_id, started_at=start, ended_at=end, model='expo-sensors-device-motion'))
+
+    @app.get('/v1/observations/latest', dependencies=[Depends(auth)])
+    async def latest_observation(request: Request):
+        """The newest MiniCPM observation, for the capture page. Only the latest one is exposed."""
+        latest = service.latest_observation
+        if not latest:
+            return Response(status_code=204)
+        etag = f'"{latest["id"]}"'
+        if request.headers.get('if-none-match') == etag:
+            return Response(status_code=304, headers={'ETag': etag})
+        return JSONResponse(latest, headers={'ETag': etag})
 
     @app.post('/', dependencies=[Depends(auth)])
     @app.post('/v1/clips', dependencies=[Depends(auth)], include_in_schema=False)
