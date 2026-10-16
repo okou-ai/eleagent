@@ -29,7 +29,7 @@ The web application and upload endpoint share an origin:
 
 The browser records separate short clips and uploads them in order. Keep the page in the foreground. Screen Wake Lock requests an awake display; it cannot prevent a deliberate lock or guarantee background recording. Interrupted capture is shown explicitly. Use HTTPS on phones. iOS 18.4 or later is recommended for home-screen use.
 
-See [the capture protocol](docs/capture.md), [installation](docs/install.md), and the dated [deployment validation record](docs/deployment-validation.md).
+See [the capture protocol](docs/capture.md), [installation](docs/install.md), the [agent deployment runbook](docs/agent-runbook.md), and the dated [deployment validation record](docs/deployment-validation.md).
 
 ## Repository
 

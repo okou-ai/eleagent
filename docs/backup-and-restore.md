@@ -22,3 +22,5 @@ Use a new, empty data directory and the recorded image versions. Preserve file o
 Start Neo4j and Archive first, then daytime model workers, Graph Sync, Graph API and Observer. Check the databases, archive reads and worker readiness. Start the host GPU managers and sleep scheduler after those checks. If rehearsing on the same ports and GPUs, keep the original deployment stopped until the rehearsal has fully released them.
 
 To return from an isolated validation, stop its scheduler, confirm both GPU managers have released their leases, stop its managers and containers, and restart the original deployment using its recorded configuration. Verify service health and the capture origin. Keep the verified backup until a separate retention decision is made.
+
+To move the original data into a new Eleagent deployment instead of restarting the original services, follow [Phase 6 of the agent runbook](agent-runbook.md#phase-6-migrate-data-and-cut-over).
