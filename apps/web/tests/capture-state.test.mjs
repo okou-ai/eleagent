@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CaptureState, recorderType, uploadDisposition } from '../capture-state.js';
+import { CaptureState, MAX_QUEUE_BYTES, MAX_QUEUE_CLIPS, bufferHasRoom, bufferRecovered, captureCamera, formatElapsed,
+  newCaptureId, recorderType, resumesAutomatically, uploadDisposition } from '../capture-state.js';
 
 test('a delayed permission grant cannot restart capture after stopping or hiding', () => {
   const state = new CaptureState();
@@ -41,4 +42,48 @@ test('supported media formats are negotiated and permanent rejection never retri
   assert.equal(uploadDisposition(401), 'auth');
   assert.equal(uploadDisposition(422), 'blocked');
   assert.equal(uploadDisposition(503), 'retry');
+});
+
+test('switching cameras starts a new capture whose identity carries the lens', () => {
+  const state = new CaptureState();
+  const back = newCaptureId('back', '0000');
+  state.activate(state.acquire(back));
+  state.clip('back');
+  state.pause('user_pause');
+  assert.equal(captureCamera(state.captureId), 'back');
+  const front = newCaptureId('front', '0001');
+  assert.equal(captureCamera(front), 'front');
+  state.activate(state.acquire(front));
+  const first = state.clip('front');
+  assert.equal(first.clip_seq, 0);
+  assert.deepEqual(first.capture_gaps, []);
+  assert.equal(captureCamera('web-legacy'), null);
+});
+
+test('only background and storage pauses resume without a tap', () => {
+  const state = new CaptureState();
+  state.activate(state.acquire('web-synthetic-back'));
+  state.pause('page_hidden');
+  assert.equal(resumesAutomatically(state.pauseReason), true);
+  state.acquire('web-synthetic-back');
+  assert.equal(state.pauseReason, null);
+  state.pause('user_pause');
+  assert.equal(resumesAutomatically(state.pauseReason), false);
+  assert.equal(resumesAutomatically('capture_interrupted'), false);
+  assert.equal(resumesAutomatically('buffer_full'), true);
+});
+
+test('a full buffer pauses capture and resumes only after draining to half', () => {
+  const full = { count: MAX_QUEUE_CLIPS, bytes: 0 };
+  assert.equal(bufferHasRoom(full), false);
+  assert.equal(bufferHasRoom({ count: 0, bytes: MAX_QUEUE_BYTES - 1 }), false);
+  assert.equal(bufferHasRoom({ count: MAX_QUEUE_CLIPS - 1, bytes: 0 }), true);
+  assert.equal(bufferRecovered({ count: MAX_QUEUE_CLIPS - 1, bytes: 0 }), false);
+  assert.equal(bufferRecovered({ count: MAX_QUEUE_CLIPS / 2, bytes: MAX_QUEUE_BYTES / 2 }), true);
+});
+
+test('elapsed recording time reads like a camera timer', () => {
+  assert.equal(formatElapsed(0), '00:00');
+  assert.equal(formatElapsed(62_400), '01:02');
+  assert.equal(formatElapsed(3_723_000), '1:02:03');
 });
