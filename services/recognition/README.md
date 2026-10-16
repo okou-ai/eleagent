@@ -39,7 +39,7 @@ The CAM++ and Qwen3-ASR directories must be prepared separately using the pinned
 
 ## Tests
 
-Use a separate Python environment, install `requirements-dev.txt`, then run from this directory:
+Install FFmpeg for the generated-media checks. Use a separate Python environment, install `requirements-dev.txt`, then run from this directory:
 
 ```sh
 python -m pytest tests
