@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CaptureState, MAX_QUEUE_BYTES, MAX_QUEUE_CLIPS, bufferHasRoom, bufferRecovered, captureCamera, formatElapsed,
-  newCaptureId, recorderType, resumesAutomatically, uploadDisposition } from '../capture-state.js';
+  formatAgo, newCaptureId, recorderType, resumesAutomatically, uploadDisposition } from '../capture-state.js';
 
 test('a delayed permission grant cannot restart capture after stopping or hiding', () => {
   const state = new CaptureState();
@@ -86,4 +86,13 @@ test('elapsed recording time reads like a camera timer', () => {
   assert.equal(formatElapsed(0), '00:00');
   assert.equal(formatElapsed(62_400), '01:02');
   assert.equal(formatElapsed(3_723_000), '1:02:03');
+});
+
+test('observation age reads in seconds, minutes and hours, then as a date', () => {
+  const now = Date.parse('2026-10-16T12:00:00Z');
+  assert.equal(formatAgo(now - 12_400, now), '12s ago');
+  assert.equal(formatAgo(now + 3_000, now), '0s ago');
+  assert.equal(formatAgo(now - 3 * 60_000, now), '3 min ago');
+  assert.equal(formatAgo(now - 2 * 3_600_000, now), '2 h ago');
+  assert.equal(formatAgo(Date.parse('2026-10-14T21:04:00Z'), now, { locale: 'en-US', timeZone: 'UTC' }), 'Oct 14, 21:04');
 });

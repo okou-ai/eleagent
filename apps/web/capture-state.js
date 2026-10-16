@@ -38,6 +38,17 @@ export function formatElapsed(ms) {
   return hours ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
 
+// How long ago an observation's footage was recorded: seconds, minutes and hours, then a date.
+export function formatAgo(then, now = Date.now(), { locale, timeZone } = {}) {
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return new Date(then).toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone });
+}
+
 export function uploadDisposition(status) {
   if (status === 401 || status === 403) return 'auth';
   if ([400, 409, 413, 415, 422].includes(status)) return 'blocked';

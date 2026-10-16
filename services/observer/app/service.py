@@ -1,6 +1,8 @@
 from collections import OrderedDict
 import asyncio
 import contextlib
+import json
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -54,6 +56,8 @@ class SceneService:
         self.activity = asyncio.Event()
         self.clients = 0
         self.mobile = MobileIngest(self)
+        self.latest_path = Path(settings.db_path).with_name('latest-observation.json')
+        self.latest_observation = self.load_latest()
         self.state = 'idle'
         self.backend_phase = 'idle'
         self.backend_error = None
@@ -202,6 +206,29 @@ class SceneService:
                 **({'media_refs': refs} if refs else {}))
         self.last_output = body['received_at']
         self.last_processed = body['context_to']
+        self.record_latest(body)
+
+    def load_latest(self):
+        try:
+            return json.loads(self.latest_path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def record_latest(self, body):
+        """Keep the newest observation for the capture page; it survives restarts and the nightly GPU handoff."""
+        text = (body.get('generated_text') or '').strip()
+        if not text:
+            return
+        self.latest_observation = {'id': body['id'], 'text': text[:2000], 'captured_from': body.get('context_from'),
+                                   'captured_to': body.get('context_to'), 'observed_at': body['received_at']}
+        temporary = self.latest_path.with_suffix('.tmp')
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w') as output:
+                json.dump(self.latest_observation, output)
+            os.replace(temporary, self.latest_path)
+        except OSError:
+            pass  # Display state only; perception must not fail because it could not be saved.
 
     async def receive(self, backend):
         while True:

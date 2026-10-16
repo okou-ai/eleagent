@@ -18,6 +18,10 @@
   <main>
     <video id="preview" autoplay playsinline muted aria-label="Camera preview"></video>
     <p id="status" class="status" role="status" aria-live="polite"></p>
+    <section id="observation" class="observation" aria-label="Latest observation" hidden>
+      <p id="observation-age" class="observation-age"></p>
+      <p id="observation-text" class="observation-text" aria-live="polite"></p>
+    </section>
     <div class="controls">
       <button id="shutter" class="shutter" aria-label="Record" disabled><span></span></button>
       <button id="flip" class="flip" aria-label="Switch camera" disabled>

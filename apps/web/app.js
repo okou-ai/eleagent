@@ -1,4 +1,4 @@
-import { CaptureState, CLIP_MS, MAX_CLIP_BYTES, bufferHasRoom, bufferRecovered, captureCamera, formatElapsed,
+import { CaptureState, CLIP_MS, MAX_CLIP_BYTES, bufferHasRoom, bufferRecovered, captureCamera, formatAgo, formatElapsed,
   newCaptureId, recorderType, resumesAutomatically, uploadDisposition } from './capture-state.js';
 import { openQueue } from './queue.js';
 
@@ -12,6 +12,7 @@ let session = null, ready = false, flipping = false, uploading = false, requesti
 let fatal = null, problem = null, blocked = null, uploadIssue = null;
 let pending = { count: 0, bytes: 0 };
 let recordedMs = 0, recordingSince = 0;
+let observation = null, observationTag = null, observationTimer, observing = false;
 let token = remembered(TOKEN_KEY)?.trim() || '';
 let camera = remembered(CAMERA_KEY) === 'front' ? 'front' : 'back';
 
@@ -33,6 +34,7 @@ function consumeTokenLink() {
   blocked = null;
   clearTimeout(uploadTimer);
   render();
+  void pollObservation();
   if (!ready) return;
   void upload();
   // A newly scanned link is a request to record unless the owner paused deliberately.
@@ -301,12 +303,40 @@ async function upload() {
   }
 }
 
+// The latest MiniCPM observation is polled separately from uploads, so it keeps updating while paused.
+async function pollObservation() {
+  clearTimeout(observationTimer);
+  if (observing || document.hidden || !token || blocked === 'auth') return;
+  observing = true;
+  try {
+    const response = await fetch('/v1/observations/latest', { cache: 'no-store', credentials: 'omit',
+      headers: { Authorization: `Bearer ${token}`, ...(observationTag ? { 'If-None-Match': observationTag } : {}) } });
+    if (response.status === 200) {
+      observation = await response.json();
+      observationTag = response.headers.get('ETag');
+    } else if (response.status === 204) {
+      observation = observationTag = null;
+    }
+  } catch { /* Keep the last observation; the next poll retries. */ } finally { observing = false; }
+  renderObservation();
+  if (!document.hidden) observationTimer = setTimeout(() => void pollObservation(), 3000);
+}
+function renderObservation() {
+  $('observation').hidden = !observation;
+  if (!observation) return;
+  const at = Date.parse(observation.captured_to || observation.observed_at);
+  $('observation-age').textContent = Number.isFinite(at) ? formatAgo(at) : '';
+  if ($('observation-text').textContent !== observation.text) $('observation-text').textContent = observation.text;
+}
+setInterval(renderObservation, 1000);
+
 $('shutter').addEventListener('click', toggle);
 $('flip').addEventListener('click', () => void flip());
 document.addEventListener('pointerdown', () => void requestWakeLock());
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pause('page_hidden'); return; }
   void upload();
+  void pollObservation();
   resumeIfAllowed();
   void requestWakeLock();
 });
@@ -344,4 +374,5 @@ async function initialize() {
   });
 }
 render();
+void pollObservation();
 void initialize();

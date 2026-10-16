@@ -38,6 +38,22 @@ video.mirrored { transform: scaleX(-1); }
 .status[data-tone="live"] { background: #ff3b30; }
 .status[data-tone="error"] { color: #ffd60a; }
 
+.observation {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 52px);
+  left: 16px;
+  right: 16px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 10px 14px 11px;
+  border-radius: 16px;
+  background: rgba(28, 28, 30, .5);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+.observation-age { font-size: 12px; font-weight: 600; color: rgba(235, 235, 245, .6); font-variant-numeric: tabular-nums; margin-bottom: 3px; }
+.observation-text { font-size: 14px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
 .controls {
   position: absolute;
   left: 0;
