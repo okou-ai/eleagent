@@ -7,4 +7,3 @@
 - Source observations, speaker clusters, OCR and image descriptions can be wrong. The diary is an interpretation with source references, not a verified factual record. Prompt changes are not evidence that hallucinations have been eliminated.
 - The initial model recipe targets two Linux ARM64 DGX Spark hosts with a direct fabric connection. Other hardware is not validated. Building the public recipes from a clean machine is a separate release check from running the original deployment.
 - Sleep currently has one owner and one scheduled nightly lease. It is not a multi-tenant service. Keep archive, graph and GPU control ports on trusted private networks.
-- Synthetic examples are authored fixtures, not measured model outputs or a public accuracy benchmark.
