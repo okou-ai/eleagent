@@ -6,18 +6,7 @@ A self-hosted personal memory system. Capture audio and video in a browser, reta
 
 Eleagent is an experimental reference implementation. Its initial hardware profile uses two NVIDIA DGX Spark systems: daytime perception shares the GPUs with a larger model at night.
 
-```mermaid
-flowchart LR
-    W[Browser capture] -->|POST /| O[Observer]
-    O --> A[Media archive]
-    A --> V[MiniCPM observations]
-    A --> R[Objects, faces, speech, OCR]
-    V --> G[Memory graph]
-    R --> G
-    G --> S[Sleep agent]
-    A --> S
-    S --> D[Memories and diary]
-```
+![Eleagent architecture: daytime parallel video perception and nighttime Pi memory consolidation, with model allocation on DGX Spark 1 and 2](docs/images/architecture.png)
 
 ## Capture
 
