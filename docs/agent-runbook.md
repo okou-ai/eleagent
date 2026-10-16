@@ -1,29 +1,26 @@
 # Agent deployment runbook
 
-This runbook is the entry point for an agent that installs Eleagent on two DGX Spark hosts, or moves an existing deployment's data onto Eleagent and makes it the production stack. It puts the existing guides in execution order and adds the data migration and cutover procedure that the component guides do not cover.
+This runbook is the deployment guide for Eleagent on two NVIDIA DGX Spark hosts running Linux ARM64. It covers a new installation, and moving an existing deployment's data onto Eleagent so that Eleagent becomes the production stack. It is written for an agent to execute.
 
-Component guides stay authoritative for their details:
-
-- [Dual-Spark deployment](../deploy/dual-spark/README.md): storage, credentials, Compose and GPU managers
-- [Model preparation](../deploy/models.md), [Atlas](../deploy/atlas/README.md), [MiniCPM](../deploy/minicpm/README.md) and [recognition](../services/recognition/README.md)
-- [Backup and restore](backup-and-restore.md) and the [capture protocol](capture.md)
+Spark 1 runs capture, MiniCPM perception, the graph database, the Graph API and the Sleep scheduler. Spark 2 runs the media archive, recognition, speech, OCR and Graph Sync. At night, the host GPU managers stop the daytime GPU workers and run the GLM model across both hosts through Atlas.
 
 ## How to use this runbook
 
-Every phase states where it runs, its inputs, its success evidence, what to do on failure, and whether it is safe to repeat. Finish a phase and record its evidence before starting the next one. If an expected result does not appear, stop at that phase. Do not skip ahead.
+Every phase states where it runs, its success evidence, what to do on failure, and whether it is safe to repeat. Finish a phase and record its evidence before starting the next one. If an expected result does not appear, stop at that phase. Do not skip ahead.
 
-Keep a private deployment record outside the repository, for example `<root>/private/` with mode `0700`. Write a small JSON receipt for each phase: time, repository revision, image IDs, counts, checksums and check results. These receipts let a later agent resume from the right phase. They may include host addresses and paths, but never put token values in them.
+Run commands from `deploy/dual-spark` unless a phase says otherwise. Keep a private deployment record outside the repository, for example `<root>/private/` with mode `0700`. Write a small JSON receipt for each phase: time, repository revision, image IDs, counts, checksums and check results. These receipts let a later agent resume from the right phase. They may include host addresses and paths, but never put token values in them.
 
 ### Rules that apply to every phase
 
 - **Data is irreplaceable; models and images are not.** Never delete, recreate, `chown -R` blindly or rewrite `DATA_ROOT`, a backup or an old deployment's data directory to make a step pass.
 - **Never reset worker state to fix a stuck queue.** Observer, recognition, speech and OCR keep cursors and pending queues in their state directories. A worker with no state reads the whole archive from the beginning, so deleting state reprocesses all history.
-- **Never weaken a check.** Do not edit `models.lock.json`, skip hash verification, or patch a model checkpoint in place. Local runtime changes belong in the converted overlay.
+- **Never weaken a check.** Do not edit `deploy/models.lock.json`, skip hash verification, or patch a model checkpoint in place. Local runtime changes belong in the converted overlay.
 - **Never open a database with an older engine than the one that last wrote it,** and never run two database processes against one directory.
 - **Credentials stay private.** Never commit `.env`, a rendered `docker compose config`, `docker inspect` output, a control token or TLS keys. Do not print token values to logs or chat.
-- **Ask before downloading large artifacts.** Prefer verified local copies. Get the owner's approval before downloading multi-gigabyte weights, wheels or base images, and record which download steps were replaced by local copies.
+- **Ask before downloading large artifacts.** Prefer verified local copies. Get the owner's approval before downloading multi-gigabyte weights, wheels or base images.
 - **Ask before irreversible or production-facing steps:** stopping a production deployment, retiring old services, or deleting anything.
 - **Keep tracked files unchanged on hosts.** Put deployment-specific settings in private Compose override files and the private `.env`, not in tracked Compose files.
+- **Respect model licenses.** The DFlash2 drafter is CC BY-NC-ND 4.0, and the MiniCPM demo application has no explicit source license. See [third-party notices](../THIRD_PARTY_NOTICES.md); confirm the owner accepts them before downloading.
 
 ### Choose a path
 
@@ -54,7 +51,7 @@ Collect the following and record them:
 | --- | --- | --- |
 | Architecture and OS | `uname -m`, `/etc/os-release` | `aarch64`, Linux |
 | Docker and Compose | `docker version`, `docker compose version` | Compose 2.30 or newer |
-| GPU containers | `docker info` runtimes; a short `nvidia-smi` container | NVIDIA runtime works |
+| GPU containers | `docker info` runtimes; a short `nvidia-smi` container | NVIDIA Container Toolkit works |
 | Service account | `id 1000` | Exists, has Docker access, owns the deployment root |
 | Free space | `df -h` on the data, model and backup volumes | Archive reserve (100 GiB default) plus backup size plus models |
 | Private network | Each host's private IPv4 address; ping between hosts | Both addresses reachable from each other |
@@ -65,71 +62,254 @@ Collect the following and record them:
 
 Values that the agent must obtain rather than guess: the private addresses, fabric interface, HCA, rank-0 fabric address, timezone, owner display name and public capture hostname. Ask the owner when they cannot be read from the hosts.
 
+The observer, recognition, speech, Sleep and GPU-manager processes must all run as UID 1000: pause, acknowledgement, readiness and control-token files deliberately use mode `0600`. Clone the repository to the same path on both hosts; the supplied systemd unit assumes `/opt/eleagent`.
+
 **Stop if** the revisions differ, the service account is not UID 1000, or another process holds a listed port or GPU and the owner has not approved stopping it.
 
 ## Phase 1: Back up existing data
 
 **Where:** both hosts, Migration path only. **Repeatable:** a new backup goes into a new directory; never overwrite an earlier one.
 
-Follow [Back up a deployment](backup-and-restore.md) exactly. The essentials:
+Store the backup outside the active data root, with mode `0700`, on private storage.
 
-1. Record a private inventory of the old deployment: container names, image IDs, mounts, restart policies, environment and GPU manager units. Later phases need it for the cutover and for preserving credentials.
-2. Wait until any night run has finished and both GPU managers are idle. Then stop the managers and every writer. Stop the graph database last.
-3. Copy each host's complete data directories with ownership, permissions and SQLite `-wal`/`-shm` files. Resolve symlinks that point outside the copied roots.
-4. Compare SHA-256 for every file. Run `PRAGMA integrity_check` on every SQLite copy. Run `neo4j-admin database check` against a disposable copy using **the same Neo4j image as the old deployment**.
-5. Write the backup receipt.
+1. **Inventory.** Record the old deployment's repository revision, container names, image IDs, mounts, restart policies, environment, Compose configuration and GPU-manager units. Keep it private: it contains credentials. Later phases need it for the cutover and for preserving credentials.
+2. **Quiesce.** Wait until any night run has finished and both GPU managers are idle with no lease. Stop both GPU managers. Stop capture ingress and Sleep on Spark 1; stop recognition, speech, OCR, Graph Sync and the archive on Spark 2. Confirm every writer has exited. Stop the Graph API and the graph database last.
+3. **Copy.** Copy each host's complete data directories, private `.env`, control token, manager configuration and any private TLS or reverse-proxy configuration. Preserve ownership, permissions and symlinks. Include SQLite `-wal` and `-shm` files. Resolve symlinks that point outside the copied roots and back up their targets too; a copied link does not preserve the bytes it references.
+4. **Verify.** Compare SHA-256 for every regular file and every symlink target. Run `PRAGMA integrity_check` on every SQLite copy. Run `neo4j-admin database check` against a disposable copy of the backed-up store, using **the same Neo4j image as the old deployment** and the store owner's UID.
+5. **Receipt.** Record completion time, file count, byte count, checksums, database-check results and the stopped-writer inventory.
 
 **Success:** both hosts have a receipt with matching hashes, `ok` integrity results and a passing Neo4j check.
 **On failure:** keep the old services stopped until you know why, or restart them from the inventory if the owner wants capture back. Do not proceed to Phase 4 without a verified backup.
 
-The new stack reuses the old deployment's GPUs and ports. Keep the old deployment stopped from here on unless the owner wants capture back; restart it only with its recorded configuration.
+The new stack reuses the old deployment's GPUs and ports. Keep the old deployment stopped from here on, unless the owner wants capture back; restart it only with its recorded configuration.
 
 ## Phase 2: Models and dependencies
 
 **Where:** each host prepares its own models. **Repeatable:** yes; verification never modifies model directories.
 
-Create the storage layout from the [dual-Spark guide](../deploy/dual-spark/README.md#storage-and-permissions) first. The model directory must be writable by UID 1000; a root-owned model root makes later downloads fail.
+### Storage layout
 
-Prepare in this order. Speech must be built before Silero can be extracted from it.
+Create the layout on each host. The example root is `/srv/eleagent`; use the `DATA_ROOT` and `MODEL_ROOT` chosen for `.env`.
 
-| Order | Host | Step | Guide |
-| --- | --- | --- | --- |
-| 1 | Spark 1 | Link or download `MiniCPM-o-4_5`; run `verify-model.py` and keep its metadata | [models](../deploy/models.md#reuse-local-files) |
-| 2 | Spark 2 | Link or download `qwen3-asr-1.7b` and `campplus`; verify | [models](../deploy/models.md) |
-| 3 | Spark 2 | Prepare face, object and OCR weights with the recognition scripts; they reuse files whose hashes match | [recognition](../services/recognition/README.md#model-preparation) |
-| 4 | Spark 2 | Build the `speech` image (Phase 3), then extract `voice_silero.jit` from it with `--skip-ecapa` | [recognition](../services/recognition/README.md#model-preparation) |
-| 5 | Both | Link or download the GLM and DFlash2 source checkpoints; verify both | [models](../deploy/models.md#optional-restricted-atlas-profile) |
-| 6 | Both | Build Atlas (Phase 3), then run `convert-model.sh` in a maintenance window with free GPUs | [Atlas](../deploy/atlas/README.md#provisioning) |
+```sh
+# Both hosts
+sudo install -d -m 0755 /srv/eleagent/data
+sudo install -d -m 0755 -o 1000 -g 1000 /srv/eleagent/models
+sudo install -d -m 0700 -o 1000 -g 1000 /srv/eleagent/data/model-metadata
+sudo install -d -m 0700 -o 1000 -g 1000 /srv/eleagent/data/gpu-manager
 
-Before downloading DFlash2, confirm that the owner accepts its CC BY-NC-ND 4.0 terms.
+# Spark 1
+sudo install -d -m 0750 -o 1000 -g 1000 /srv/eleagent/data/observer /srv/eleagent/data/sleep
+sudo install -d -m 0750 -o 7474 -g 7474 /srv/eleagent/data/neo4j/data /srv/eleagent/data/neo4j/logs
+sudo install -d -m 0750 /srv/eleagent/data/minicpm-cache
 
-Atlas conversion reads the source checkpoints read-only and writes a separate `atlas-overlay`. Keep `conversion.complete.json`, `sparkglm-verified.json` and `eleagent-overlay.json`. The overlay links to the source checkpoint by absolute path, so do not move the source afterward.
+# Spark 2
+sudo install -d -m 2750 -o 10001 -g 10001 /srv/eleagent/data/archive
+sudo install -d -m 0750 -o 1000 -g 1000 /srv/eleagent/data/recognition
+```
+
+The archive runs as UID 10001. Graph Sync runs as UID 1000 with supplementary group 10001 so it can read the archive database and its WAL. The model root must be writable by UID 1000; a root-owned model root makes later downloads fail. On the Migration path, skip the data directories that Phase 4 will copy in: the copy refuses existing destinations.
+
+Expected model directories under `MODEL_ROOT`:
+
+| Host | Directory | Purpose |
+| --- | --- | --- |
+| Spark 1 | `MiniCPM-o-4_5` | Daytime perception |
+| Spark 2 | `entities` | Face and object weights, manifests, `voice_silero.jit` |
+| Spark 2 | `campplus` | Speaker embeddings |
+| Spark 2 | `qwen3-asr-1.7b` | Speech transcription |
+| Spark 2 | `ocr` | Three checksum-pinned OCR ONNX files |
+| Both | `glm-5.3-flash-atlas` | GLM and DFlash2 sources, plus the converted Atlas overlay |
+
+### Order
+
+Speech must be built before Silero can be extracted from it, and Atlas must be built before conversion. Run the model steps in this order and the image builds from Phase 3 in between:
+
+| Order | Host | Step |
+| --- | --- | --- |
+| 1 | Spark 1 | MiniCPM weights: link or download, then verify |
+| 2 | Spark 2 | Qwen ASR and CAM++: link or download, then verify |
+| 3 | Spark 2 | Face, object and OCR weights |
+| 4 | Spark 2 | Build the `speech` image (Phase 3), then extract Silero |
+| 5 | Both | GLM and DFlash2 sources: link or download, then verify |
+| 6 | Both | Build Atlas (Phase 3), then convert |
+
+### Verify or download pinned weights
+
+`deploy/models.lock.json` holds repository IDs, immutable revisions, directory names and licenses. `deploy/verify-model.py` checks large files with SHA-256 and other files, including configuration and tokenizers, with Git blob SHA-1. It never downloads weights or modifies the directory. Run from the repository root with `.env` loaded:
+
+```sh
+set -a; . deploy/dual-spark/.env; set +a
+```
+
+Reuse local copies by copying, hard-linking or symlinking them into the expected directory, then verify. Save metadata on the first check so that later checks need no network:
+
+```sh
+ln -s /path/to/existing/MiniCPM-o-4_5 "$MODEL_ROOT/MiniCPM-o-4_5"
+python3 deploy/verify-model.py minicpm-o-4_5 --path "$MODEL_ROOT/MiniCPM-o-4_5" \
+  --write-metadata "$DATA_ROOT/model-metadata/minicpm.json"
+# Later, offline:
+python3 deploy/verify-model.py minicpm-o-4_5 --path "$MODEL_ROOT/MiniCPM-o-4_5" \
+  --metadata-file "$DATA_ROOT/model-metadata/minicpm.json"
+```
+
+Only when no verified local copy exists, and after the owner approves, download the exact revisions:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install huggingface_hub==0.34.6
+# Spark 1
+.venv/bin/hf download openbmb/MiniCPM-o-4_5 --revision 503e754207c94da6bb26850b4469f367c9ea3582 \
+  --local-dir "$MODEL_ROOT/MiniCPM-o-4_5"
+# Spark 2
+.venv/bin/hf download Qwen/Qwen3-ASR-1.7B --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
+  --local-dir "$MODEL_ROOT/qwen3-asr-1.7b"
+.venv/bin/hf download funasr/campplus --revision e4b6ede7ce16997aff4ae69fbca1f0175e2afede \
+  --local-dir "$MODEL_ROOT/campplus"
+# Both hosts, after the owner accepts the DFlash2 license
+.venv/bin/hf download nvidia/GLM-5.3-Flash-NVFP4 --revision da920bb0b9f4a06727223a349e55468e38352348 \
+  --local-dir "$MODEL_ROOT/glm-5.3-flash-atlas/nvidia--GLM-5.3-Flash-NVFP4"
+.venv/bin/hf download incoai/GLM-5.3-Flash-DFlash2 --revision 7d74cdd881ed7e32c31175984a67823127b66cfe \
+  --local-dir "$MODEL_ROOT/glm-5.3-flash-atlas/incoai--GLM-5.3-Flash-DFlash2"
+```
+
+Then verify each one: `minicpm-o-4_5`, `qwen3-asr-1.7b`, `campplus`, `glm-5.3-flash-nvfp4` and `glm-dflash2`, each with `--path` set to its directory. The GLM and DFlash2 sources can also be copied between the hosts over the private link and verified on each.
+
+### Recognition weights (Spark 2)
+
+From `services/recognition`, with `ENTITY_WEIGHTS_DIR="$MODEL_ROOT/entities"` exported. Each script reuses existing files whose pinned hashes match:
+
+```sh
+python3 download_models.py --weights-dir "$MODEL_ROOT/entities"   # add --offline to require local files
+python3 object_download_models.py
+python3 ocr_download_models.py --model-dir "$MODEL_ROOT/ocr"
+```
+
+After the speech image is built, extract Silero from its installed, pinned package without a download:
+
+```sh
+docker run --rm --entrypoint python -v "$MODEL_ROOT/entities:/models/entities" \
+  local/eleagent-speech:production /app/voice_download_models.py \
+  --weights-dir /models/entities --skip-ecapa
+```
+
+### Atlas conversion (both hosts)
+
+After the Atlas image is built, in a maintenance window with the GPUs free, run from `deploy/atlas`:
+
+```sh
+bash convert-model.sh "$MODEL_ROOT/glm-5.3-flash-atlas" sha256:<atlas-image-id>
+```
+
+Conversion reads the source checkpoints read-only and writes a separate `atlas-overlay`, including the converted MTP quantization metadata. Keep `conversion.complete.json`, `sparkglm-verified.json` and `eleagent-overlay.json` in the overlay. The overlay links to the source checkpoints by absolute path, so do not move the sources afterward.
 
 **Success:** every `verify-model.py` run exits 0; the recognition scripts report matching hashes; both hosts have a complete Atlas overlay with its three receipt files.
-**On failure:** a hash mismatch means the files differ from the pinned revision. Obtain correct bytes. Do not edit the lock or the files. A failed conversion leaves the source untouched; remove only the incomplete overlay and rerun.
+**On failure:** a hash mismatch means the files differ from the pinned revision. Obtain correct bytes. Do not edit the lock or the files. A failed conversion leaves the sources untouched; remove only the incomplete overlay and rerun.
 
 ## Phase 3: Configure and build
 
 **Where:** both hosts. **Repeatable:** builds yes; credential and manager configuration generation refuse to overwrite.
 
-1. **Private `.env`.** New install: generate it as in the [dual-Spark guide](../deploy/dual-spark/README.md#private-configuration), then copy the identical file to the other host. Migration: create it from the old deployment's values as described in [preserving credentials](#preserving-credentials).
-2. **Images.** Build the CPU services, then `recognition` and `speech` on Spark 2, MiniCPM on Spark 1, and Atlas on both hosts. Use the documented cache options when large dependencies already exist locally:
-   - MiniCPM: `MINICPM_WHEELHOUSE`, `MINICPM_SOURCE_DIR` or `MINICPM_CACHED_BASE_IMAGE` ([MiniCPM](../deploy/minicpm/README.md))
-   - Recognition: `RECOGNITION_BASE_IMAGE` with `REUSE_INSTALLED_TORCH=1` ([recognition](../services/recognition/README.md#reusing-a-local-dependency-image))
-   - Atlas: `ATLAS_NATIVE_ARTIFACTS_DIR`, `ATLAS_SOURCE_CACHE`, `ATLAS_CUDA_*_IMAGE` ([Atlas](../deploy/atlas/README.md#reusing-local-build-assets))
+### Private configuration
 
-   Record every image ID and every cache override.
-3. **GPU managers.** Generate one control token, copy it to the other host, generate each host's configuration with `generate-config.py`, install the unit with the UID-1000 account, and enable it ([dual-Spark guide](../deploy/dual-spark/README.md#host-gpu-managers)). The manager timezone must equal `ELEAGENT_TIMEZONE`.
-4. **Compose configuration.** Run `docker compose ... config --quiet` for each host file, including any private override file. Do not save its output.
+New install: generate `.env` once, without printing the credentials, then edit `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE` and `ELEAGENT_OWNER_NAME`:
 
-**Success:** all images exist with recorded IDs; `config --quiet` passes on both hosts; `systemctl is-active eleagent-gpu-manager` is `active` and `GET /status` on each manager reports `idle` with no lease.
-**On failure:** registry or network errors during builds are not reasons to edit Dockerfiles. Use a documented cache option, or report the missing dependency and ask whether a download is approved.
+```sh
+cp .env.example .env
+chmod 600 .env
+python3 - <<'PY'
+from pathlib import Path
+import secrets
+path = Path('.env')
+text = path.read_text()
+for key in ('SCENE_API_TOKEN', 'SCENE_ARCHIVE_TOKEN', 'GRAPH_API_TOKEN', 'NEO4J_PASSWORD'):
+    text = text.replace(key + '=\n', key + '=' + secrets.token_hex(32) + '\n')
+path.write_text(text)
+path.chmod(0o600)
+PY
+```
+
+Migration: create `.env` from the old deployment's values instead, as described in [preserving credentials](#preserving-credentials).
+
+Transfer the identical `.env` privately to the other host. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts. `SCENE_API_TOKEN` is the browser upload token; the archive and Graph API use separate tokens.
+
+### Images
+
+Build each image on the host that runs it. Record every image ID.
+
+```sh
+# Spark 1
+docker compose --env-file .env -f compose.spark1.yaml config --quiet
+docker compose --env-file .env -f compose.spark1.yaml build observer graph-api sleep
+bash ../minicpm/build.sh
+# Spark 2
+docker compose --env-file .env -f compose.spark2.yaml config --quiet
+docker compose --env-file .env -f compose.spark2.yaml build archive text graph-sync recognition speech
+# Both hosts
+bash ../atlas/build.sh    # prints the image ID used for conversion and the manager
+```
+
+Do not save `config` output: interpolation includes credentials. When large dependencies already exist locally, reuse them instead of downloading again:
+
+| Image | Option | Effect |
+| --- | --- | --- |
+| MiniCPM | `MINICPM_WHEELHOUSE=/abs/dir` | Uses local wheel and source archives with their original filenames; lock hashes still apply |
+| MiniCPM | `MINICPM_SOURCE_DIR=/abs/checkout` | Uses an existing Git checkout of the pinned upstream commit |
+| MiniCPM | `MINICPM_CACHED_BASE_IMAGE=<image>` | Builds the application on an existing dependency-only image (ARM64 Python 3.12, CUDA 13 PyTorch, FFmpeg, curl); do not combine with `MINICPM_BASE_IMAGE` |
+| Recognition, speech | `RECOGNITION_BASE_IMAGE=<image>` and `REUSE_INSTALLED_TORCH=1` in `.env` | Reuses exact-version installed PyTorch packages; other locked dependencies still install |
+| Atlas | `ATLAS_NATIVE_ARTIFACTS_DIR=/abs/dir` | Uses extracted native libraries and converter from a local release; checksums still apply |
+| Atlas | `ATLAS_SOURCE_CACHE=/abs/dir` | Uses complete local `sparkglm.git` and `engine.git` repositories instead of GitHub |
+| Atlas | `ATLAS_CUDA_DEVEL_IMAGE`, `ATLAS_CUDA_RUNTIME_IMAGE` | Uses exact local CUDA 13.0 Ubuntu 24.04 base images |
+
+### GPU managers
+
+The managers are systemd host services outside Compose. As the UID-1000 account, generate one control token on Spark 1 and copy exactly the same file privately to Spark 2:
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+import os, secrets
+path = Path('/srv/eleagent/data/gpu-manager/control.secret')
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w') as output:
+    output.write(secrets.token_hex(32) + '\n')
+PY
+```
+
+Generate each host's configuration. Angle-bracket values are required inputs from Phase 0, not defaults:
+
+```sh
+set -a; . ./.env; set +a
+HOST_ROLE=s1    # s2 on Spark 2
+ATLAS_IMAGE_ID=$(docker image inspect --format '{{.Id}}' local/eleagent-atlas:production)
+if [ "$HOST_ROLE" = s1 ]; then
+  MANAGER_BIND_ADDRESS=$SPARK1_ADDRESS; WORKER_DATA_DIR=$DATA_ROOT/observer
+else
+  MANAGER_BIND_ADDRESS=$SPARK2_ADDRESS; WORKER_DATA_DIR=$DATA_ROOT/recognition
+fi
+sudo install -d -m 0750 -o 1000 -g 1000 /etc/eleagent
+python3 ../../runtime/gpu-manager/generate-config.py \
+  --role "$HOST_ROLE" --bind-address "$MANAGER_BIND_ADDRESS" \
+  --leader-address '<rank-0-private-fabric-address>' --image-id "$ATLAS_IMAGE_ID" \
+  --data-dir "$WORKER_DATA_DIR" --model-root "$MODEL_ROOT/glm-5.3-flash-atlas" \
+  --repo-dir /opt/eleagent --state-dir "$DATA_ROOT/gpu-manager" \
+  --fabric-interface '<interface-name>' --fabric-hca '<hca-name>' \
+  --timezone "$ELEAGENT_TIMEZONE" --output /etc/eleagent/gpu-manager.json
+sudo install -m 0644 ../../runtime/gpu-manager/eleagent-gpu-manager.service /etc/systemd/system/
+sudo systemctl edit --full eleagent-gpu-manager.service   # set User and Group to the UID/GID-1000 account
+sudo systemctl daemon-reload
+sudo systemctl enable --now eleagent-gpu-manager.service
+```
+
+The manager timezone must equal `ELEAGENT_TIMEZONE`. The night window starts at 00:30, permits acquisition before 05:00, and ends at 05:30 local time. On Spark 1 the manager stops only `eleagent-minicpm`; on Spark 2 only `eleagent-recognition` and `eleagent-speech`. The observer and CPU services keep running.
+
+**Success:** all images exist with recorded IDs; `config --quiet` passes on both hosts; `systemctl is-active eleagent-gpu-manager` is `active`, and `GET http://<private-address>:9210/status` with the control token reports `idle` with no lease on both hosts.
+**On failure:** registry or network errors during builds are not reasons to edit Dockerfiles. Use a reuse option above, or report the missing dependency and ask whether a download is approved.
 
 ## Phase 4: Migrate data
 
 **Where:** both hosts, Migration path only. **Repeatable:** copying into a non-empty destination is refused; to redo it, move the incomplete destination aside with the owner's approval and start again.
 
-Phase 4 moves the old deployment's latest data into the new data root. Eleagent then becomes the deployment that runs from now on. Unlike the restore rehearsal in the backup guide, the old core services are not started again afterward.
+Phase 4 moves the old deployment's latest data into the new data root. Eleagent then becomes the deployment that runs from now on; the old core services are not started again.
 
 ### Preserving credentials
 
@@ -141,7 +321,7 @@ The new production `.env` must reuse the old deployment's values. Do not generat
 | `SCENE_ARCHIVE_TOKEN`, `GRAPH_API_TOKEN` | Existing internal clients and graph readers use them |
 | `NEO4J_PASSWORD` | An existing database keeps its stored password; the container variable only sets the password of a new database |
 | `ELEAGENT_TIMEZONE` | Diary days, sleep dates and the night window are computed in it |
-| `ELEAGENT_OWNER_NAME` | Keeps the sleep agent's owner identity unchanged |
+| `ELEAGENT_OWNER_NAME` | Keeps the Sleep agent's owner identity unchanged |
 
 Read these values from the old deployment's private configuration or from the Phase 1 inventory. Write them straight into a mode-0600 `.env` without printing them. Assert that the same credential agrees across every old service that uses it. Use the same file on both hosts.
 
@@ -151,7 +331,11 @@ The tracked Compose file pins a default Neo4j image. Before starting the migrate
 
 1. Tag the old image ID under a local name, for example `local/eleagent-neo4j:<version>-migrated`.
 2. Add a private Compose override, outside the repository, that sets `graph.image` to that tag. Set `graph.user` to the UID:GID that owns the copied store if it differs from the default `7474`. Also carry over any non-default database settings from the old container.
-3. Start Spark 1 through a small private launcher that always passes the override after the tracked Compose file, so later restarts cannot fall back to the default image.
+3. Start Spark 1 through a small private launcher that always passes the override after the tracked Compose file, so later restarts cannot fall back to the default image:
+
+   ```sh
+   exec docker compose --env-file .env -f compose.spark1.yaml -f /private/path/compose.production.yaml "$@"
+   ```
 
 An older engine must never open a store written by a newer one. Upgrading the engine is a separate, explicitly approved operation with its own backup.
 
@@ -172,15 +356,15 @@ The same private override is the place for other deployment-specific settings ca
 
    **Copy worker state together with the archive.** If the archive is copied without the observer and recognition state, every worker starts from cursor zero and reprocesses all history.
 3. **Copy.** Copy each source into a destination that does not exist yet, preserving attributes (`cp -a --reflink=auto SRC DST`). Refuse symlinks inside data directories unless their targets are copied too.
-4. **Verify.** Compare SHA-256 for every file between source and destination before changing anything. Then, with no process holding the databases, remove copied SQLite `-shm` files, run `PRAGMA integrity_check` on every SQLite database (which replays its WAL), and run `neo4j-admin database check` with the retained engine.
-5. **Ownership.** Apply the ownership from the [storage table](../deploy/dual-spark/README.md#storage-and-permissions): archive UID 10001 with group-readable databases, Neo4j as chosen above, everything else UID 1000.
+4. **Check the copy.** Compare SHA-256 for every file between source and destination before changing anything. Then, with no process holding the databases, remove copied SQLite `-shm` files, run `PRAGMA integrity_check` on every SQLite database (which replays its WAL), and run `neo4j-admin database check` with the retained engine.
+5. **Ownership.** Archive UID 10001 with group-readable databases; Neo4j as chosen above; everything else UID 1000.
 6. **Receipt.** Record file counts, bytes, checksum results, database checks and the directory map.
 
 ## Phase 5: Start services
 
 **Where:** both hosts. **Repeatable:** yes; `up -d --no-build` never touches data.
 
-Start Spark 2's services, then Spark 1's daytime services. On the Migration path, include the private override through the launcher from Phase 4. Do not start `sleep` yet:
+Start Spark 2's services, then Spark 1's daytime services. On the Migration path, use the launcher from Phase 4 on Spark 1. Do not start `sleep` yet:
 
 ```sh
 # Spark 2
@@ -189,7 +373,7 @@ docker compose --env-file .env -f compose.spark2.yaml up -d --no-build
 docker compose --env-file .env -f compose.spark1.yaml up -d --no-build graph minicpm observer graph-api
 ```
 
-Wait for readiness: Neo4j healthy, MiniCPM `/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm that `GET /` returns the page and an unauthenticated `POST /` returns `401`.
+Wait for readiness: Neo4j healthy, MiniCPM `http://127.0.0.1:22400/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `python3 ../../runtime/gpu-manager/ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm that `GET http://127.0.0.1:8080/` returns the page and that an unauthenticated `POST /` returns `401`.
 
 On the Migration path, also confirm that the data was carried over before starting `sleep`:
 
@@ -199,7 +383,7 @@ On the Migration path, also confirm that the data was carried over before starti
 | Worker progress | Every observer, recognition, speech and OCR cursor equals the archive head; pending queues are empty or match the old values |
 | No reprocessing | Worker event counts do not jump after startup |
 | Identity data | Entity, sample and voice-identity counts equal the old deployment's |
-| Graph | Graph API returns the old entity and link counts using the preserved `GRAPH_API_TOKEN` |
+| Graph | `GET http://127.0.0.1:22403/v1/graph/entities` with the preserved `GRAPH_API_TOKEN` returns the old data |
 | Sleep state | `scheduler.json` shows the last day the old deployment slept |
 
 Then, with both managers `idle`, start the scheduler on Spark 1:
@@ -208,9 +392,20 @@ Then, with both managers `idle`, start the scheduler on Spark 1:
 docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep
 ```
 
-Its first run is the next scheduled local night between 00:30 and 05:00 in `ELEAGENT_TIMEZONE`. Do not trigger a manual night run or change the timezone to force one.
+Its first run is the next local night between 00:30 and 05:00 in `ELEAGENT_TIMEZONE`. Do not trigger a manual night run or change the timezone to force one.
 
-Confirm restart policies are `unless-stopped`, the managers are enabled, only the HTTPS origin is reachable from outside, and the private ports are bound as listed in the [listener table](../deploy/dual-spark/README.md#build-and-start).
+Keep internal listeners private. Only the HTTPS reverse proxy is reachable by capture clients:
+
+| Listener | Bind |
+| --- | --- |
+| Web capture | Spark 1 loopback `8080`, behind HTTPS |
+| Graph API | Spark 1 loopback `22403` |
+| MiniCPM worker / backend | Spark 1 loopback `22400` / `22500` |
+| Neo4j Bolt | Spark 1 private address `7687`; HTTP console disabled |
+| Archive | Spark 2 private address `22401` |
+| GPU managers | Each host's private address `9210`, bearer authenticated |
+| GLM HTTP | Spark 1 loopback `8893`, during Sleep only |
+| Metrics | Host loopback, ports set in each Compose service |
 
 **On failure:** read the failing service's logs and its state. Do not delete its state to clear an error. If a night run fails, the managers restore daytime services at the hard deadline, when a lease expires, or after a manager restart; wait for that before investigating, and do not start or remove Atlas rank containers by hand.
 
@@ -230,10 +425,17 @@ After the new stack is running, ask the owner before this step. Then:
 
 **Where:** Spark 1 and the owner's phone. **Repeatable:** yes.
 
-1. Put HTTPS in front of the observer ([installation](install.md#https-for-the-browser)). Confirm `GET /` over HTTPS from outside the private network.
-2. Give the owner a private link `https://<capture-host>/#token=<URL-encoded SCENE_API_TOKEN>` or a QR code of it ([capture protocol](capture.md)). Share it only through a private channel and store the image with restricted visibility.
-3. The owner taps **Start recording** and allows the camera and microphone. They should keep the page in the foreground and speak normally for 10–15 seconds.
+1. Phones allow camera and microphone access only over HTTPS. Terminate TLS in front of `127.0.0.1:8080` and forward every path, including `POST /`. For example, with Caddy and a domain the owner controls:
+
+   ```caddyfile
+   capture.example.com {
+       reverse_proxy 127.0.0.1:8080
+   }
+   ```
+
+   A private VPN with a certificate the phone trusts also works. Never disable certificate validation. Confirm `GET /` over HTTPS from outside the private network.
+2. Give the owner a private link `https://<capture-host>/#token=<URL-encoded SCENE_API_TOKEN>`, or a QR code of it. The page reads the token from the fragment and removes it; fragments are not sent to the server. Share it only through a private channel, and store any QR image with restricted visibility.
+3. The owner taps **Start recording**, allows the camera and microphone, keeps the page in the foreground, and speaks normally for 10–15 seconds. Switching apps or locking the phone pauses recording. Clips wait in the browser's bounded queue until the server confirms archival, so browser data must not be cleared while uploads are pending.
 4. Confirm on the servers: new clips archived, MiniCPM, recognition, OCR and speech events for them, a non-empty transcript, and queues draining. Short queues after a burst of buffered uploads are normal; a growing backlog is not.
 
-**Success:** the owner's own clips reach every stage, and speech produces text.
-**On failure:** check upload responses first (401 means a wrong token; a conflict means a reused identity), then whether each service is running and its queue is moving.
+**On failure:** check upload responses first. `401` means a wrong token; a conflict means a capture identity was reused for different bytes. Then check that each service is running and its queue is moving.
