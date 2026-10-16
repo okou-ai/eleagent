@@ -8,33 +8,21 @@ Eleagent is an experimental reference implementation. Its initial hardware profi
 
 ![Eleagent architecture: daytime parallel video perception and nighttime Pi memory consolidation, with model allocation on DGX Spark 1 and 2](docs/images/architecture.png)
 
-## Capture
+## How to start
 
-The web application and upload endpoint share an origin:
+1. Get **two NVIDIA DGX Spark systems, each with 128 GB of unified memory**.
+2. Verify that you can connect to both machines over SSH. On a computer with SSH access to both, open **Claude Code or Codex** and paste the prompt below:
 
-- `GET /` serves the capture interface.
-- `POST /` accepts a multipart `meta` JSON field and a `video` file, authenticated with a bearer token.
-- Successful responses acknowledge durable archival. Repeating the same capture ID, sequence and content is idempotent.
+```markdown
+Help me deploy Eleagent (https://github.com/okou-ai/eleagent) to my DGX Spark cluster.
 
-The browser records separate short clips and uploads them in order. Keep the page in the foreground. Screen Wake Lock requests an awake display; it cannot prevent a deliberate lock or guarantee background recording. Interrupted capture is shown explicitly. Use HTTPS on phones. iOS 18.4 or later is recommended for home-screen use.
+First, ask me to confirm the SSH targets for both machines. Do not begin deployment until I confirm them.
 
-To deploy, follow the [agent deployment runbook](docs/agent-runbook.md).
+After I confirm the targets, follow the agent deployment runbook:
+https://github.com/okou-ai/eleagent/blob/main/docs/agent-runbook.md
+```
 
-## Repository
-
-| Path | Responsibility |
-| --- | --- |
-| `apps/web` | Browser capture and bounded local upload queue |
-| `services/observer` | Upload ingress and MiniCPM observation scheduling |
-| `services/archive` | Original media and timestamped evidence |
-| `services/recognition` | Face, object, speech and OCR workers |
-| `services/graph-api` | Read API for the memory graph |
-| `services/graph-sync` | Incremental graph synchronization |
-| `services/sleep` | Pi memory tools, prompts and nightly consolidation |
-| `runtime/gpu-manager` | Host GPU leases, draining and recovery |
-| `deploy` | Versioned model and hardware recipes |
-
-The local model route has a configured 524,288-token context window.
+See the [agent deployment runbook](docs/agent-runbook.md) for the full deployment procedure.
 
 ## Licensing
 
@@ -44,26 +32,28 @@ Original project code is AGPL-3.0-only unless a file states otherwise. Dependenc
 
 ## References
 
-These studies directly informed Eleagent's core design; they do not imply algorithm reproduction, biological equivalence, or validation of Eleagent.
+Core research behind Eleagent's design.
 
-[1] T. J. Teyler and P. DiScenna, “The hippocampal memory indexing theory,” *Behavioral Neuroscience*, vol. 100, no. 2, pp. 147–154, 1986, doi: [10.1037/0735-7044.100.2.147](https://doi.org/10.1037/0735-7044.100.2.147).
+1. T. J. Teyler and P. DiScenna, “[The hippocampal memory indexing theory](https://doi.org/10.1037/0735-7044.100.2.147),” *Behavioral Neuroscience*, vol. 100, no. 2, pp. 147–154, 1986.
 
-[2] J. L. McClelland, B. L. McNaughton, and R. C. O'Reilly, “Why there are complementary learning systems in the hippocampus and neocortex: Insights from the successes and failures of connectionist models of learning and memory,” *Psychological Review*, vol. 102, no. 3, pp. 419–457, 1995, doi: [10.1037/0033-295X.102.3.419](https://doi.org/10.1037/0033-295X.102.3.419).
+2. J. L. McClelland, B. L. McNaughton, and R. C. O'Reilly, “[Why there are complementary learning systems in the hippocampus and neocortex: Insights from the successes and failures of connectionist models of learning and memory](https://doi.org/10.1037/0033-295X.102.3.419),” *Psychological Review*, vol. 102, no. 3, pp. 419–457, 1995.
 
-[3] P. A. Lewis and S. J. Durrant, “Overlapping memory replay during sleep builds cognitive schemata,” *Trends in Cognitive Sciences*, vol. 15, no. 8, pp. 343–351, 2011, doi: [10.1016/j.tics.2011.06.004](https://doi.org/10.1016/j.tics.2011.06.004).
+3. P. A. Lewis and S. J. Durrant, “[Overlapping memory replay during sleep builds cognitive schemata](https://doi.org/10.1016/j.tics.2011.06.004),” *Trends in Cognitive Sciences*, vol. 15, no. 8, pp. 343–351, 2011.
 
-[4] B. A. Richards and P. W. Frankland, “The persistence and transience of memory,” *Neuron*, vol. 94, no. 6, pp. 1071–1084, 2017, doi: [10.1016/j.neuron.2017.04.037](https://doi.org/10.1016/j.neuron.2017.04.037).
+4. B. A. Richards and P. W. Frankland, “[The persistence and transience of memory](https://doi.org/10.1016/j.neuron.2017.04.037),” *Neuron*, vol. 94, no. 6, pp. 1071–1084, 2017.
 
-[5] J. M. Zacks, N. K. Speer, K. M. Swallow, T. S. Braver, and J. R. Reynolds, “Event perception: A mind-brain perspective,” *Psychological Bulletin*, vol. 133, no. 2, pp. 273–293, 2007, doi: [10.1037/0033-2909.133.2.273](https://doi.org/10.1037/0033-2909.133.2.273).
+5. J. M. Zacks, N. K. Speer, K. M. Swallow, T. S. Braver, and J. R. Reynolds, “[Event perception: A mind-brain perspective](https://doi.org/10.1037/0033-2909.133.2.273),” *Psychological Bulletin*, vol. 133, no. 2, pp. 273–293, 2007.
 
-[6] E. K. Miller and J. D. Cohen, “An integrative theory of prefrontal cortex function,” *Annual Review of Neuroscience*, vol. 24, pp. 167–202, 2001, doi: [10.1146/annurev.neuro.24.1.167](https://doi.org/10.1146/annurev.neuro.24.1.167).
+6. E. K. Miller and J. D. Cohen, “[An integrative theory of prefrontal cortex function](https://doi.org/10.1146/annurev.neuro.24.1.167),” *Annual Review of Neuroscience*, vol. 24, pp. 167–202, 2001.
 
-[7] M. F. Land and M. Hayhoe, “In what ways do eye movements contribute to everyday activities?,” *Vision Research*, vol. 41, nos. 25–26, pp. 3559–3565, 2001, doi: [10.1016/S0042-6989(01)00102-X](https://doi.org/10.1016/S0042-6989(01)00102-X).
+7. M. F. Land and M. Hayhoe, “[In what ways do eye movements contribute to everyday activities?](https://doi.org/10.1016/S0042-6989(01)00102-X),” *Vision Research*, vol. 41, nos. 25–26, pp. 3559–3565, 2001.
 
-[8] M. K. Johnson, S. Hashtroudi, and D. S. Lindsay, “Source monitoring,” *Psychological Bulletin*, vol. 114, no. 1, pp. 3–28, 1993, doi: [10.1037/0033-2909.114.1.3](https://doi.org/10.1037/0033-2909.114.1.3).
+8. M. K. Johnson, S. Hashtroudi, and D. S. Lindsay, “[Source monitoring](https://doi.org/10.1037/0033-2909.114.1.3),” *Psychological Bulletin*, vol. 114, no. 1, pp. 3–28, 1993.
 
 <details>
 <summary>Design notes and implementation links</summary>
+
+These are functional design influences—not claims of algorithm reproduction, biological equivalence, or validation of Eleagent.
 
 - **Source-linked memory [1].** The graph retains selected memories and links; original media stays in the [archive](services/archive), accessible through [Sleep tools](services/sleep/extensions/memory.ts).
 - **Day / night integration [2].** Fast [online perception](services/observer) feeds slower [nightly consolidation](services/sleep).
