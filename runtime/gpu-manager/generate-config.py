@@ -38,7 +38,6 @@ def main():
         'acquire_start_minute': 30,
         'acquire_end_minute': 300,
         'hard_stop_minute': 330,
-        'secret_file': str(args.state_dir / 'control.secret'),
         'state_file': str(args.state_dir / 'state.json'),
         'host_role': args.role,
         'data_dir': str(args.data_dir),
@@ -76,7 +75,7 @@ def main():
     with os.fdopen(descriptor, 'w') as output:
         json.dump(config, output, indent=2)
         output.write('\n')
-    print('Manager configuration generated; create the shared mode-0600 token separately.')
+    print('Manager configuration generated.')
 
 
 if __name__ == '__main__':

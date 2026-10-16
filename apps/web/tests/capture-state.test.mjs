@@ -39,7 +39,6 @@ test('a new capture resets sequence identity and cannot claim a prior capture ga
 test('supported media formats are negotiated and permanent rejection never retries forever', () => {
   assert.equal(recorderType({ isTypeSupported: type => type === 'video/webm' }), 'video/webm');
   assert.equal(recorderType({ isTypeSupported: () => false }), '');
-  assert.equal(uploadDisposition(401), 'auth');
   assert.equal(uploadDisposition(422), 'blocked');
   assert.equal(uploadDisposition(503), 'retry');
 });

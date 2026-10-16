@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ApiError } from './graph.mjs';
 
 const MAX_BODY = 32 * 1024;
@@ -52,8 +52,9 @@ function parseFilter(raw) {
   return filter;
 }
 
-function cursors(token) {
-  const key = createHmac('sha256', token).update('scene-graph-api/cursor/v1').digest();
+// Cursors are signed only to reject edited pagination state; the key lasts for this process.
+function cursors(secret) {
+  const key = createHmac('sha256', secret).update('scene-graph-api/cursor/v1').digest();
   const sign = (value) => createHmac('sha256', key).update(value).digest('base64url');
   const scopeId = (scope) => createHash('sha256').update(JSON.stringify(scope)).digest('base64url');
   return {
@@ -96,10 +97,8 @@ async function jsonBody(req) {
   return result;
 }
 
-export function createApiServer({ store, token, onRequest = () => {} }) {
-  if (typeof token !== 'string' || token.length < 32) throw new Error('GRAPH_API_TOKEN must have at least 32 characters');
-  const expectedAuth = createHash('sha256').update(`Bearer ${token}`).digest();
-  const cursor = cursors(token);
+export function createApiServer({ store, cursorSecret = randomBytes(32), onRequest = () => {} }) {
+  const cursor = cursors(cursorSecret);
   const server = http.createServer({ maxHeaderSize: 64 * 1024 }, async (req, res) => {
     const started = performance.now();
     let route = 'unknown';
@@ -119,17 +118,10 @@ export function createApiServer({ store, token, onRequest = () => {} }) {
         if (!url.pathname.startsWith('/v1/graph/')) throw new ApiError(404, 'not_found', 'Route not found');
         res.writeHead(204, {
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+          'Access-Control-Allow-Headers': 'Content-Type',
           'Access-Control-Max-Age': '600',
         });
         return res.end();
-      }
-      const authorization = req.headers.authorization || '';
-      const normalized = authorization.replace(/^bearer /i, 'Bearer ');
-      const supplied = createHash('sha256').update(normalized).digest();
-      if (!timingSafeEqual(supplied, expectedAuth)) {
-        res.setHeader('WWW-Authenticate', 'Bearer');
-        throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
       }
       const match = /^\/v1\/graph\/entities\/([^/]+)(\/links)?$/.exec(url.pathname);
       if (url.pathname === '/v1/graph/entities') {

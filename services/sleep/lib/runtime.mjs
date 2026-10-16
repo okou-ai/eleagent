@@ -8,13 +8,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 export const LOCAL_MODEL = 'glm-5.3-flash-atlas';
 export const LOCAL_PROVIDER = 'local-glm';
 const MANAGERS = (process.env.GPU_MANAGER_URLS || '').split(',').map((s) => s.trim()).filter(Boolean);
-const TOKEN_FILE = process.env.GPU_MANAGER_TOKEN_FILE || '/run/eleagent-gpu/token';
 const API = process.env.LOCAL_GLM_URL || 'http://127.0.0.1:8893';
 const log = (message) => process.stderr.write(`${new Date().toISOString()} ${message}\n`);
 
 export function localPiEnv(runDir) {
-  // Memory tools need read access to Archive. Provider keys, proxy settings and unrelated credentials
-  // are deliberately absent; Pi has a separate, otherwise empty agent directory.
+  // Memory tools need read access to Archive. Provider keys and proxy settings are deliberately absent;
+  // Pi has a separate, otherwise empty agent directory.
   const agentDir = process.env.PI_CODING_AGENT_DIR || '/app/pi-agent';
   const home = agentDir + '/home';
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -24,7 +23,7 @@ export function localPiEnv(runDir) {
   fs.writeFileSync(configPath, JSON.stringify(models), { mode: 0o600 });
   const env = { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', HOME: home, LANG: 'C.UTF-8', TZ: TIME_ZONE, ELEAGENT_TIMEZONE: TIME_ZONE,
     RUN_DIR: runDir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0', NO_PROXY: '*' };
-  for (const name of ['ARCHIVE_URL', 'SCENE_ARCHIVE_TOKEN']) if (process.env[name]) env[name] = process.env[name];
+  if (process.env.ARCHIVE_URL) env.ARCHIVE_URL = process.env.ARCHIVE_URL;
   return env;
 }
 
@@ -34,7 +33,7 @@ export function signalGroup(pid, signal) {
 }
 
 // node:http ignores environment proxy settings. Do not include response bodies or headers in errors.
-function request(origin, route, { token, body, signal, timeout = 5_000 } = {}) {
+function request(origin, route, { body, signal, timeout = 5_000 } = {}) {
   return new Promise((resolve, reject) => {
     let timer, settled = false;
     const finish = (error, value) => {
@@ -46,7 +45,7 @@ function request(origin, route, { token, body, signal, timeout = 5_000 } = {}) {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request(new URL(route, origin), {
       method: payload === null ? 'GET' : 'POST', ...(signal ? { signal } : {}),
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(payload === null ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }) },
+      headers: payload === null ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
     }, (res) => {
       let text = '';
       res.on('data', (chunk) => { text += chunk; if (text.length > 1_000_000) req.destroy(new Error('oversized status response')); });
@@ -75,15 +74,13 @@ export class NightRuntime {
     this.signal = this.controller.signal;
     this.acquired = false;
     this.heartbeatBusy = false;
-    this.token = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
-    if (!this.token) throw new Error('GPU manager token is empty');
     this.deadlineTimer = setTimeout(() => this.abort(new Error('night deadline')), deadline - Date.now());
   }
   abort(reason = new Error('night cancelled')) { if (!this.signal.aborted) this.controller.abort(reason); }
   check() { if (this.signal.aborted) throw this.signal.reason; if (Date.now() >= this.deadline) throw new Error('night deadline has passed'); }
   async all(route, body, signal = this.signal) {
     // Await both requests even when one fails: callers must release every acquired host.
-    const results = await Promise.allSettled(MANAGERS.map((host) => request(host, route, { token: this.token, body, signal })));
+    const results = await Promise.allSettled(MANAGERS.map((host) => request(host, route, { body, signal })));
     if (results.some((result) => result.status === 'rejected')) throw new Error(`GPU manager ${route} failed`);
     return results.map((result) => result.value);
   }
@@ -115,16 +112,16 @@ export class NightRuntime {
       await delay(2_000, undefined, { signal: this.signal });
     }
     // The worker must be started before the coordinator joins distributed inference.
-    await request(MANAGERS[1], '/start', { token: this.token, body: { lease: this.lease }, signal: this.signal });
+    await request(MANAGERS[1], '/start', { body: { lease: this.lease }, signal: this.signal });
     for (;;) {
       this.check();
-      const worker = await request(MANAGERS[1], '/status', { token: this.token, signal: this.signal });
+      const worker = await request(MANAGERS[1], '/status', { signal: this.signal });
       this.validateStatus([worker]);
       if (worker.phase === 'running') break;
       if (Date.now() >= until) throw new Error('GLM worker exceeded loading budget');
       await delay(2_000, undefined, { signal: this.signal });
     }
-    await request(MANAGERS[0], '/start', { token: this.token, body: { lease: this.lease }, signal: this.signal });
+    await request(MANAGERS[0], '/start', { body: { lease: this.lease }, signal: this.signal });
     for (;;) {
       this.check();
       const states = await this.all('/status');
@@ -145,7 +142,7 @@ export class NightRuntime {
     clearInterval(this.heartbeatTimer);
     if (!this.acquired) return;
     // Release is independent of the cancelled inference signal. A lost client also expires after 120s.
-    const releases = await Promise.allSettled(MANAGERS.map((host) => request(host, '/release', { token: this.token, body: { lease: this.lease } })));
+    const releases = await Promise.allSettled(MANAGERS.map((host) => request(host, '/release', { body: { lease: this.lease } })));
     if (releases.some((result) => result.status === 'rejected')) log('one or more release acknowledgements missing; checking independent host recovery');
     const until = Math.min(this.deadline + 30 * 60_000, Date.now() + 20 * 60_000);
     while (Date.now() < until) {

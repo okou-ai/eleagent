@@ -43,10 +43,9 @@ class NoGate:
 
 
 class GatewayGate:
-    def __init__(self, url, worker_id=None, token=None, verify=True):
+    def __init__(self, url, worker_id=None, verify=True):
         self.worker_id = worker_id or os.environ.get('GATEWAY_WORKER_ID', 'recognition')
-        self.client = httpx.Client(base_url=url.rstrip('/'), timeout=3, verify=verify, trust_env=False,
-            headers={'Authorization': 'Bearer ' + token} if token else {})
+        self.client = httpx.Client(base_url=url.rstrip('/'), timeout=3, verify=verify, trust_env=False)
 
     def check(self):
         try:
@@ -67,7 +66,7 @@ class GatewayGate:
 
 
 class Worker:
-    def __init__(self, store, archive_url, token, faces, gate, objects=None, voices=None, sample_fps=1., max_frames=12, voice_threshold=.65, voice_margin=.10, reprocess_history=False):
+    def __init__(self, store, archive_url, faces, gate, objects=None, voices=None, sample_fps=1., max_frames=12, voice_threshold=.65, voice_margin=.10, reprocess_history=False):
         self.store, self.faces, self.objects, self.voices, self.gate = store, faces, objects, voices, gate
         self.reprocess_history = reprocess_history
         self.sample_fps, self.max_frames = sample_fps, max_frames
@@ -78,8 +77,7 @@ class Worker:
         if not reprocess_history:
             self.store.inherit_entity_pipeline(self.pipeline)
         self.store.set_config('model_versions', canonical({'face':faces.version if faces else None, 'object':objects.version if objects else None, 'voice':voices.version if voices else None}))
-        self.archive = httpx.Client(base_url=archive_url.rstrip('/'), timeout=httpx.Timeout(30, connect=3),
-            headers={'Authorization': 'Bearer ' + token}, trust_env=False)
+        self.archive = httpx.Client(base_url=archive_url.rstrip('/'), timeout=httpx.Timeout(30, connect=3), trust_env=False)
 
     def discover(self):
         cursor = int(self.store.config(self.cursor_key, '0'))
@@ -267,9 +265,9 @@ def main():
     if args.voices:
         from .voice import VoiceExtractor
         voices = VoiceExtractor(args.weights, device=args.device)
-    gate = NoGate() if args.minicpm_gate == 'off' else GatewayGate(os.environ['GATEWAY_URL'], token=os.environ.get('GATEWAY_TOKEN'),
+    gate = NoGate() if args.minicpm_gate == 'off' else GatewayGate(os.environ['GATEWAY_URL'],
         verify=False if os.environ.get('GATEWAY_INSECURE_LOCAL') == '1' else os.environ.get('GATEWAY_CA_BUNDLE', True))
-    worker = Worker(Store(args.state, recover=True), os.environ['ARCHIVE_URL'], os.environ['SCENE_ARCHIVE_TOKEN'], faces, gate, objects, voices, args.sample_fps, args.max_frames, args.voice_threshold, args.voice_margin, args.reprocess_history)
+    worker = Worker(Store(args.state, recover=True), os.environ['ARCHIVE_URL'], faces, gate, objects, voices, args.sample_fps, args.max_frames, args.voice_threshold, args.voice_margin, args.reprocess_history)
     if not args.reprocess_history:
         dropped = worker.store.drop_superseded(worker.pipeline)
         print(canonical({'status': 'superseded_history_skipped', 'dropped_jobs': dropped}), flush=True)

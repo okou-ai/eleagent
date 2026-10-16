@@ -1,18 +1,14 @@
 """Standalone archive process: uvicorn app.archive_server:create_archive_app --factory."""
 from contextlib import asynccontextmanager
-import hmac
 import os
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI
 
 from .archive import Archive
 from .archive_api import install_archive_routes
 
 
-def create_archive_app(api_token=None, db_path=None, media_root=None, reserve_bytes=None):
-    token = api_token if api_token is not None else os.getenv('SCENE_ARCHIVE_TOKEN', '')
-    if len(token) < 16 or token.startswith('replace-with-'):
-        raise ValueError('SCENE_ARCHIVE_TOKEN must contain at least 16 non-placeholder characters')
+def create_archive_app(db_path=None, media_root=None, reserve_bytes=None):
     media_root = media_root or os.getenv('SCENE_ARCHIVE_ROOT', '/data/archive/media')
     db_path = db_path or os.getenv('SCENE_ARCHIVE_DB', '/data/archive/archive.sqlite3')
     reserve_bytes = int(os.getenv('SCENE_ARCHIVE_RESERVE_BYTES', str(100 * 1024**3))) if reserve_bytes is None else reserve_bytes
@@ -28,12 +24,7 @@ def create_archive_app(api_token=None, db_path=None, media_root=None, reserve_by
     app = FastAPI(title='Eleagent Media Archive', version='1.0.0', lifespan=lifespan)
     app.state.archive = archive
 
-    def auth(authorization: str = Header(default='')):
-        if not hmac.compare_digest(authorization.encode(), ('Bearer ' + token).encode()):
-            raise HTTPException(401, detail={'code': 'archive_authentication_required'})
-
-
-    install_archive_routes(app, archive, auth)
+    install_archive_routes(app, archive)
     from . import metrics
     metrics.instrument_fastapi(app)
     def archive_counts():

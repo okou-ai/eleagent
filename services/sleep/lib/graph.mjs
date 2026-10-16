@@ -10,8 +10,7 @@ const TEST_PREFIXES = ['archive-probe-', 'entity-acceptance-'];
 const SLEEP_ID = 'sleep';
 
 export function connect() {
-  const password = (process.env.NEO4J_AUTH || '').split('/').slice(1).join('/');
-  return neo4j.driver(process.env.GRAPH_URL || 'bolt://graph:7687', neo4j.auth.basic('neo4j', password), { disableLosslessIntegers: true });
+  return neo4j.driver(process.env.GRAPH_URL || 'bolt://graph:7687', neo4j.auth.none(), { disableLosslessIntegers: true });
 }
 
 export async function sleepState(session) {

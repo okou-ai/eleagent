@@ -2,7 +2,6 @@ name: eleagent-spark2
 
 x-recognition-environment: &recognition-environment
   ARCHIVE_URL: http://${SPARK2_ADDRESS:?Set the private Spark 2 address}:22401
-  SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN:?Generate the shared archive token}
   ENTITY_WEIGHTS_DIR: /models/entities
   ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
   HOME: /tmp
@@ -19,7 +18,6 @@ services:
     user: "10001:10001"
     command: ["uvicorn", "app.archive_server:create_archive_app", "--factory", "--host", "${SPARK2_ADDRESS}", "--port", "22401"]
     environment:
-      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN}
       SCENE_ARCHIVE_ROOT: /data/archive/media
       SCENE_ARCHIVE_DB: /data/archive/archive.sqlite3
       SCENE_ARCHIVE_RESERVE_BYTES: ${ARCHIVE_RESERVE_BYTES:-107374182400}
@@ -110,7 +108,6 @@ services:
     group_add: ["10001"]
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Generate the graph password}
       GRAPH_URL: bolt://${SPARK1_ADDRESS:?Set the private Spark 1 address}:7687
       ARCHIVE_DB: /archive/archive.sqlite3
       ENTITY_STATE_PATH: /entities/entities.sqlite

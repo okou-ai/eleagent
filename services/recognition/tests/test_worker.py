@@ -45,7 +45,7 @@ def test_actual_face_model_original_checksum_pts_and_archive_timeline(tmp_path):
         def check(self): pass
     store=Store(tmp_path/'entities.sqlite')
     model=FaceModel(ROOT/'weights')
-    worker=Worker(store,'http://archive.test','fixture-token',model,Idle())
+    worker=Worker(store,'http://archive.test',model,Idle())
     worker.archive=httpx.Client(base_url='http://archive.test',transport=httpx.MockTransport(transport))
     assert worker.tick()
     timeline=archive.timeline(kind='face')['items']
@@ -71,7 +71,7 @@ def test_rejected_event_is_durable_visible_and_does_not_block_valid_events(tmp_p
     rejected={'event_id':'bad','kind':'face','body':{'sample_id':'repair-me'}}
     accepted={'event_id':'good','kind':'face','body':{'sample_id':'later'}}
     store.complete_job('fixture',[rejected,accepted])
-    worker=Worker(store,'http://archive.test','fixture-token',None,Idle())
+    worker=Worker(store,'http://archive.test',None,Idle())
     def transport(request):
         body=json.loads(request.content)
         if body['event_id']=='bad':
@@ -91,7 +91,7 @@ def test_retryable_archive_failure_remains_pending(tmp_path):
     class Idle:
         def check(self):pass
     store=Store(tmp_path/'entities.sqlite');store.complete_job('fixture',[{'event_id':'pending','body':{}}])
-    worker=Worker(store,'http://archive.test','fixture-token',None,Idle())
+    worker=Worker(store,'http://archive.test',None,Idle())
     worker.archive=httpx.Client(base_url='http://archive.test',transport=httpx.MockTransport(lambda request:httpx.Response(503,json={'detail':{'code':'unavailable'}})))
     with pytest.raises(httpx.HTTPStatusError):worker.flush()
     assert len(store.pending_events())==1
@@ -101,8 +101,8 @@ def test_retryable_archive_failure_remains_pending(tmp_path):
 def test_pipeline_changes_get_new_event_ids_but_keep_original_sample_identity(tmp_path):
     class Idle:
         def check(self):pass
-    store=Store(tmp_path/'entities.sqlite');first=Worker(store,'http://archive.test','fixture-token',None,Idle(),max_frames=2)
-    second=Worker(store,'http://archive.test','fixture-token',None,Idle(),max_frames=3)
+    store=Store(tmp_path/'entities.sqlite');first=Worker(store,'http://archive.test',None,Idle(),max_frames=2)
+    second=Worker(store,'http://archive.test',None,Idle(),max_frames=3)
     asset={'media_id':'original','capture_id':'capture','captured_at':'2026-10-09T16:00:00Z','sha256':'a'*64}
     data={'embedding':[1.,0.,0.]}
     observation_a=first._observation(asset,'face','same-model',0,0,dict(data),set())
@@ -133,7 +133,7 @@ def test_unknown_voice_status_is_not_promoted_by_coordinator(tmp_path):
     store=Store(tmp_path/'entities.sqlite')
     asset={'media_id':'fixture','capture_id':'capture','captured_at':'2026-10-09T16:00:00Z',
         'duration_seconds':1.,'sha256':hashlib.sha256(source.read_bytes()).hexdigest(),'size_bytes':source.stat().st_size}
-    worker=Worker(store,'http://archive.test','fixture-token',None,Idle(),voices=UnknownVoice())
+    worker=Worker(store,'http://archive.test',None,Idle(),voices=UnknownVoice())
     worker.download=lambda asset,destination:shutil.copyfile(source,destination)
     assert store.enqueue(asset,worker.pipeline)
     worker.process(store.take_job(0,worker.pipeline))
@@ -147,7 +147,7 @@ def test_unknown_voice_status_is_not_promoted_by_coordinator(tmp_path):
 def test_discovery_skips_marked_fixture_advances_cursor_and_keeps_later_real_assets(tmp_path):
     class Idle:
         def check(self):pass
-    store=Store(tmp_path/'entities.sqlite');worker=Worker(store,'http://archive.test','fixture-token',None,Idle())
+    store=Store(tmp_path/'entities.sqlite');worker=Worker(store,'http://archive.test',None,Idle())
     requested=[]
     assets=[
         {'media_id':'public-fixture','ingest_cursor':1,'metadata':{'test_fixture':True}},

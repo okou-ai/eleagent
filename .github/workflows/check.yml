@@ -56,11 +56,11 @@ jobs:
       neo4j:
         image: neo4j:2026.02.3-community
         env:
-          NEO4J_AUTH: neo4j/isolated-ci-database-only
+          NEO4J_AUTH: none
         ports:
           - 17687:7687
         options: >-
-          --health-cmd "cypher-shell -u neo4j -p isolated-ci-database-only 'RETURN 1'"
+          --health-cmd "cypher-shell 'RETURN 1'"
           --health-interval 10s
           --health-timeout 10s
           --health-retries 30
@@ -75,4 +75,3 @@ jobs:
         working-directory: services/graph-api
         env:
           TEST_NEO4J_URL: bolt://127.0.0.1:17687
-          TEST_NEO4J_PASSWORD: isolated-ci-database-only

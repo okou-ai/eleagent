@@ -38,7 +38,7 @@ def memories(memory):
 
 
 def client_context(events, fail=()):
-    value = situation.Situation(None, '')
+    value = situation.Situation(None)
     requests = []
 
     def respond(request):
@@ -102,7 +102,7 @@ def test_identity_correction_and_removal_take_effect_without_rewriting_or_refetc
 
 
 def test_ambiguous_missing_and_non_person_voice_matches_never_assert_a_person():
-    ctx = situation.Situation(None, '')
+    ctx = situation.Situation(None)
     memories(ctx.memory)
     ctx.memory.cluster_map['voice_owner_alias'] = 'person:owner'
     assert ctx.memory.speaker({'entity_ids': ['voice_owner', 'voice_alex']}) == ('voice identity uncertain', None)
@@ -170,7 +170,7 @@ def test_late_transcript_appears_on_refresh_and_partial_failures_preserve_other_
 
 
 def test_frequent_selfie_faces_do_not_displace_current_speaker_and_objects():
-    ctx = situation.Situation(None, '')
+    ctx = situation.Situation(None)
     memories(ctx.memory)
     recalled = ctx.memory.recall({'object_cup': 3, 'object_book': 2}, [ctx.memory.entities['person:alex']],
                                  {'face_owner': 100, 'face_bea': 2})
@@ -178,7 +178,7 @@ def test_frequent_selfie_faces_do_not_displace_current_speaker_and_objects():
 
 
 def test_uncertain_or_ambiguous_recognition_is_not_promoted_to_confirmed_identity():
-    ctx = situation.Situation(None, '')
+    ctx = situation.Situation(None)
     meta = {'memories': [{'id': 'person:alex', 'name': 'Alex'}, {'id': 'person:bea', 'name': 'Bea'}]}
     for text in ('maybe: Alex', 'unknown', 'possibly Alex', 'Alex or Bea', 'uncertain: Bea',
                  'not Alex', 'Alex, but not enough evidence', 'Alexander, same voice', 'The voice reminds me of Alex'):
@@ -188,7 +188,7 @@ def test_uncertain_or_ambiguous_recognition_is_not_promoted_to_confirmed_identit
 
 
 def test_rewind_clears_future_working_memory():
-    ctx = situation.Situation(None, '')
+    ctx = situation.Situation(None)
     ctx.record(CAPTURE, AT + timedelta(seconds=10), 'Event: new: reading a synthetic book', {}, 0)
     prompt, _, meta = ctx.build(CAPTURE, AT, 5, 0)
     assert 'reading a synthetic book' not in prompt
@@ -224,7 +224,7 @@ def test_graph_refresh_publishes_map_and_entities_together():
             return Result([{'id': 'person:alex', 'kind': 'person', 'name': 'Alex', 'text': 'Synthetic person'}])
 
     async def check():
-        memory = situation.Memory(None, None, None)
+        memory = situation.Memory(None)
         memories(memory)
         memory.driver = Graph()
         memory.map_at -= 61

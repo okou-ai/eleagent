@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
@@ -54,8 +54,8 @@ async def bounded_body(request, maximum, timeout=30):
     return bytes(data)
 
 
-def install_archive_routes(app, archive, auth):
-    router = APIRouter(prefix='/v1/archive', dependencies=[Depends(auth)])
+def install_archive_routes(app, archive):
+    router = APIRouter(prefix='/v1/archive')
     extract_lock = asyncio.Semaphore(1)
     frame_lock = asyncio.Semaphore(2)
 

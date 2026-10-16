@@ -12,9 +12,8 @@ from starlette.background import BackgroundTask
 
 
 class RemoteArchive:
-    def __init__(self, url, token, outbox_path):
+    def __init__(self, url, outbox_path):
         self.client = httpx.AsyncClient(base_url=url.rstrip('/'), trust_env=False,
-            headers={'Authorization': 'Bearer ' + token},
             timeout=httpx.Timeout(25, connect=3), limits=httpx.Limits(max_connections=6))
         self.db = sqlite3.connect(outbox_path, check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')

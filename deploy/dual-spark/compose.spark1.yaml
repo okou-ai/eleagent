@@ -12,12 +12,9 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "app.main:create_app", "--factory", "--host", "127.0.0.1", "--port", "8080", "--workers", "1", "--no-access-log"]
     environment:
-      SCENE_API_TOKEN: ${SCENE_API_TOKEN:?Generate the browser upload token}
       SCENE_DB_PATH: /data/scene.sqlite3
       GRAPH_URL: bolt://${SPARK1_ADDRESS:?Set the private Spark 1 address}:7687
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Generate the graph password}
       SCENE_ARCHIVE_URL: http://${SPARK2_ADDRESS:?Set the private Spark 2 address}:22401
-      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN:?Generate the shared archive token}
       MINICPM_BACKEND: windowed
       MINICPM_URL: ws://127.0.0.1:22400/v1/worker/chat
       SCENE_QUEUE_SIZE: "600"
@@ -60,7 +57,7 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Generate the graph password}
+      NEO4J_AUTH: none
       NEO4J_server_default__listen__address: ${SPARK1_ADDRESS:?Set the private Spark 1 address}
       NEO4J_server_default__advertised__address: ${SPARK1_ADDRESS}
       NEO4J_server_http_enabled: "false"
@@ -72,7 +69,7 @@ services:
       - ${DATA_ROOT}/neo4j/data:/data
       - ${DATA_ROOT}/neo4j/logs:/logs
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -a bolt://$${NEO4J_server_default__listen__address}:7687 -u neo4j -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1' >/dev/null"]
+      test: ["CMD-SHELL", "cypher-shell -a bolt://$${NEO4J_server_default__listen__address}:7687 'RETURN 1' >/dev/null"]
       interval: 15s
       timeout: 10s
       retries: 12
@@ -90,9 +87,7 @@ services:
       graph:
         condition: service_healthy
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
       GRAPH_URL: bolt://${SPARK1_ADDRESS}:7687
-      GRAPH_API_TOKEN: ${GRAPH_API_TOKEN:?Generate the graph API token}
       HOST: 127.0.0.1
       PORT: "22403"
       METRICS_PORT: "9208"
@@ -110,12 +105,9 @@ services:
       graph:
         condition: service_healthy
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
       GRAPH_URL: bolt://${SPARK1_ADDRESS}:7687
       ARCHIVE_URL: http://${SPARK2_ADDRESS}:22401
-      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN}
       GPU_MANAGER_URLS: http://${SPARK1_ADDRESS}:9210,http://${SPARK2_ADDRESS}:9210
-      GPU_MANAGER_TOKEN_FILE: /run/eleagent-gpu/token
       LOCAL_GLM_URL: http://127.0.0.1:8893
       ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
       ELEAGENT_OWNER_NAME: ${ELEAGENT_OWNER_NAME:-Me}
@@ -124,5 +116,4 @@ services:
       METRICS_PORT: "9206"
     volumes:
       - ${DATA_ROOT}/sleep:/data
-      - ${DATA_ROOT}/gpu-manager/control.secret:/run/eleagent-gpu/token:ro
     stop_grace_period: 120s

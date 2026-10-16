@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import http from 'node:http';
 import { after, before, describe, test } from 'node:test';
@@ -8,17 +8,17 @@ import { GraphStore } from './graph.mjs';
 import { createApiServer } from './server.mjs';
 
 // This suite may write only to the explicitly provisioned, empty test database.
-// Never substitute a production URL or a default password here.
+// Never substitute a production URL here.
 const testUrl = process.env.TEST_NEO4J_URL;
 const allowedTestUrl = 'bolt://127.0.0.1:17687';
-const token = `integration-${randomUUID()}`;
+const cursorSecret = randomBytes(32);
 const runId = randomUUID();
 const id = (suffix) => `integration-${runId}-${suffix}`;
 const group = (name) => `${runId}-${name}`;
 const prefix = '/v1/graph';
 
 describe('generic graph API against an isolated real Neo4j', {
-  skip: !testUrl && 'Set TEST_NEO4J_URL and TEST_NEO4J_PASSWORD for the isolated test database',
+  skip: !testUrl && 'Set TEST_NEO4J_URL for the isolated test database',
 }, () => {
   let driver;
   let server;
@@ -80,8 +80,7 @@ describe('generic graph API against an isolated real Neo4j', {
 
   before(async () => {
     assert.equal(testUrl, allowedTestUrl, 'Refusing test writes outside the exact isolated test URL');
-    assert.ok(process.env.TEST_NEO4J_PASSWORD, 'The isolated database password must be explicitly provided');
-    driver = neo4j.driver(testUrl, neo4j.auth.basic('neo4j', process.env.TEST_NEO4J_PASSWORD));
+    driver = neo4j.driver(testUrl, neo4j.auth.none());
     await driver.verifyConnectivity();
     assert.deepEqual(await counts(), { nodes: 0, links: 0 }, 'Refusing to seed a nonempty database');
     // Mark fixture creation before the first write so partial setup is also cleaned.
@@ -112,7 +111,7 @@ describe('generic graph API against an isolated real Neo4j', {
       CREATE (a)-[:LINK]->(empty)
     `, { a: id('a'), e: id('e'), state: id('internal') });
     initialCounts = await counts();
-    server = createApiServer({ store: new GraphStore(driver), token });
+    server = createApiServer({ store: new GraphStore(driver), cursorSecret });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     origin = `http://127.0.0.1:${server.address().port}`;
@@ -141,9 +140,8 @@ describe('generic graph API against an isolated real Neo4j', {
     if (countFailure) throw countFailure;
   });
 
-  async function request(path, { method = 'GET', body, authorization = `Bearer ${token}`, rawBody } = {}) {
+  async function request(path, { method = 'GET', body, rawBody } = {}) {
     const headers = {};
-    if (authorization !== null) headers.authorization = authorization;
     if (body !== undefined || rawBody !== undefined) headers['content-type'] = 'application/json';
     const response = await fetch(`${origin}${path}`, {
       method, headers,
@@ -167,8 +165,6 @@ describe('generic graph API against an isolated real Neo4j', {
     assert.equal(typeof result.body.error?.message, 'string');
     assert.ok(result.body.error.message.length > 0);
     assert.equal(result.body.error.stack, undefined);
-    assert.ok(!JSON.stringify(result.body).includes(token), 'Errors must not expose the API token');
-    assert.ok(!JSON.stringify(result.body).includes(process.env.TEST_NEO4J_PASSWORD), 'Errors must not expose database credentials');
   }
 
   function assertGraph(body) {
@@ -191,19 +187,6 @@ describe('generic graph API against an isolated real Neo4j', {
     }
     return entityIds;
   }
-
-  test('all four data routes require valid bearer authorization', async () => {
-    const routes = [
-      [`${prefix}/entities`, {}],
-      [`${prefix}/entities/${id('a')}`, {}],
-      [`${prefix}/entities/${id('a')}/links`, {}],
-      [`${prefix}/subgraph`, { method: 'POST', body: { ids: [id('a')] } }],
-    ];
-    for (const [path, options] of routes) {
-      assertError(await request(path, { ...options, authorization: null }), 401);
-      assertError(await request(path, { ...options, authorization: 'Bearer incorrect' }), 401);
-    }
-  });
 
   test('unknown kinds and every ordinary property use the same entity envelope', async () => {
     const result = await request(`${prefix}/entities/${id('unknown')}`);
@@ -338,8 +321,8 @@ describe('generic graph API against an isolated real Neo4j', {
   });
 
   test('even correctly signed cursor payloads must have a valid shape', async () => {
-    // A bearer-token holder can derive the cursor key. Signing is not validation.
-    const key = createHmac('sha256', token).update('scene-graph-api/cursor/v1').digest();
+    // Anyone holding the cursor key can sign a payload. Signing is not validation.
+    const key = createHmac('sha256', cursorSecret).update('scene-graph-api/cursor/v1').digest();
     const signPayload = (payload) => {
       const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
       return `${data}.${createHmac('sha256', key).update(data).digest('base64url')}`;
@@ -355,7 +338,6 @@ describe('generic graph API against an isolated real Neo4j', {
       const outgoing = http.request(`${origin}${prefix}/subgraph`, {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${token}`,
           'content-type': 'application/json',
           'transfer-encoding': 'chunked',
           connection: 'close',

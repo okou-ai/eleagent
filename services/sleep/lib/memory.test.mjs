@@ -20,14 +20,12 @@ function memory(t, nodes = {}, edges = {}) {
 }
 
 function archive(t, handler) {
-  const prior = { url: process.env.ARCHIVE_URL, token: process.env.SCENE_ARCHIVE_TOKEN, fetch: globalThis.fetch };
-  process.env.ARCHIVE_URL = 'http://archive.test'; process.env.SCENE_ARCHIVE_TOKEN = 'synthetic-test-token';
+  const prior = { url: process.env.ARCHIVE_URL, fetch: globalThis.fetch };
+  process.env.ARCHIVE_URL = 'http://archive.test';
   globalThis.fetch = async (url) => ({ ok: true, json: async () => handler(new URL(url)) });
   t.after(() => {
     globalThis.fetch = prior.fetch;
-    for (const [key, value] of [['ARCHIVE_URL', prior.url], ['SCENE_ARCHIVE_TOKEN', prior.token]]) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
+    if (prior.url === undefined) delete process.env.ARCHIVE_URL; else process.env.ARCHIVE_URL = prior.url;
   });
 }
 

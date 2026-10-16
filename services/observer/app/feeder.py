@@ -32,11 +32,11 @@ log = logging.getLogger(__name__)
 
 
 class ArchiveFeeder:
-    def __init__(self, service, url, token, path):
+    def __init__(self, service, url, path):
         self.service = service
         self.night_pause = NightPause('minicpm')
         self.client = httpx.AsyncClient(base_url=url.rstrip('/'), trust_env=False,
-            headers={'Authorization': 'Bearer ' + token}, timeout=httpx.Timeout(30, connect=3))
+            timeout=httpx.Timeout(30, connect=3))
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('CREATE TABLE IF NOT EXISTS feed_cursor (id INTEGER PRIMARY KEY CHECK (id = 0), cursor INTEGER NOT NULL)')

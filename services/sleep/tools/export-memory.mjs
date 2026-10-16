@@ -22,11 +22,11 @@ fs.mkdirSync(`${out}/clips`, { recursive: true });
 async function clip(mediaId) {
   const file = `${mediaId}.mp4`;
   if (fs.existsSync(`${out}/clips/${file}`)) return file;
-  const auth = { Authorization: `Bearer ${process.env.SCENE_ARCHIVE_TOKEN}` }, base = process.env.ARCHIVE_URL || 'http://archive:22401';
+  const base = process.env.ARCHIVE_URL || 'http://archive:22401';
   try {
-    const info = await (await fetch(`${base}/v1/archive/media/${mediaId}`, { headers: auth })).json();
+    const info = await (await fetch(`${base}/v1/archive/media/${mediaId}`)).json();
     const dur = Math.max(0.5, Math.floor(Number(info.duration_seconds) * 10) / 10 - 0.05);
-    const r = await fetch(`${base}/v1/archive/media/${mediaId}/excerpt?start=0&duration=${dur}&format=mp4`, { headers: auth, signal: AbortSignal.timeout(90_000) });
+    const r = await fetch(`${base}/v1/archive/media/${mediaId}/excerpt?start=0&duration=${dur}&format=mp4`, { signal: AbortSignal.timeout(90_000) });
     if (!r.ok) return null;
     fs.writeFileSync(`${out}/clips/${file}`, Buffer.from(await r.arrayBuffer()));
     return file;

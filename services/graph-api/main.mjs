@@ -3,12 +3,7 @@ import neo4j from 'neo4j-driver';
 import { GraphStore } from './graph.mjs';
 import { createApiServer } from './server.mjs';
 
-const token = process.env.GRAPH_API_TOKEN;
-const auth = process.env.NEO4J_AUTH || '';
-const slash = auth.indexOf('/');
-if (slash < 1 || !token) throw new Error('NEO4J_AUTH and GRAPH_API_TOKEN are required');
-const driver = neo4j.driver(process.env.GRAPH_URL || 'bolt://graph:7687',
-  neo4j.auth.basic(auth.slice(0, slash), auth.slice(slash + 1)), {
+const driver = neo4j.driver(process.env.GRAPH_URL || 'bolt://graph:7687', neo4j.auth.none(), {
     maxConnectionPoolSize: 8,
     connectionAcquisitionTimeout: 5000,
     connectionTimeout: 5000,
@@ -19,7 +14,7 @@ const store = new GraphStore(driver, { timeoutMs: 5000 });
 const counts = new Map();
 const durations = new Map();
 let inShutdown = false;
-const server = createApiServer({ store, token, onRequest(route, status, seconds) {
+const server = createApiServer({ store, onRequest(route, status, seconds) {
   const key = `route="${route}",status="${status}"`;
   counts.set(key, (counts.get(key) || 0) + 1);
   const old = durations.get(route) || { count: 0, sum: 0 };

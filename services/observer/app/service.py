@@ -43,7 +43,7 @@ class SceneService:
     def __init__(self, settings, backend_factory=None):
         self.settings = settings
         self.receipts = Receipts()
-        self.archive = (RemoteArchive(settings.archive_url, settings.archive_token,
+        self.archive = (RemoteArchive(settings.archive_url,
             str(Path(settings.db_path).with_name('archive-outbox.sqlite3'))) if settings.archive_url else None)
         adapter = WindowedMiniCPM if settings.backend == 'windowed' else RealtimeMiniCPM
         adapter_options = ({'max_new_tokens': settings.max_new_tokens,
@@ -83,7 +83,7 @@ class SceneService:
         self.frames = 0
         self.assembler = TurnAssembler()
         self.situation = Situation.from_env(settings) if settings.backend == 'windowed' and settings.archive_url else None
-        self.feeder = (ArchiveFeeder(self, settings.archive_url, settings.archive_token,
+        self.feeder = (ArchiveFeeder(self, settings.archive_url,
             str(Path(settings.db_path).with_name('minicpm-feed.sqlite3'))) if settings.archive_url else None)
 
     async def start(self):

@@ -561,7 +561,7 @@ export class Memory {
   /** ⟦HH:MM⟧ / ⟦HH:MM:SS⟧ anchors (configured local time) -> the archived clip covering that moment, so the diary points at raw video/audio. */
   async resolveMoments(day, text) {
     const out = [];
-    const base = process.env.ARCHIVE_URL, token = process.env.SCENE_ARCHIVE_TOKEN;
+    const base = process.env.ARCHIVE_URL;
     for (const m of new Set([...text.matchAll(/⟦(\d{1,2}:\d{2}(?::\d{2})?)⟧/g)].map((x) => x[1]))) {
       const [h, mi, se = '0'] = m.split(':');
       const t = zonedDateTime(day, Number(h), Number(mi), Number(se));
@@ -570,7 +570,7 @@ export class Memory {
         // Exact cover first, then the nearest clip within ±2 minutes (captures have small gaps).
         for (const pad of [0, 120_000]) {
           const q = new URLSearchParams({ started_at: new Date(t.getTime() - pad).toISOString(), ended_at: new Date(t.getTime() + pad).toISOString(), limit: '100' });
-          const r = await fetch(`${base}/v1/archive/media?${q}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
+          const r = await fetch(`${base}/v1/archive/media?${q}`, { signal: AbortSignal.timeout(15_000) });
           const items = r.ok ? ((await r.json()).items || []) : [];
           const best = items.map((x) => ({ x, d: Math.abs(new Date(x.captured_at).getTime() + Number(x.duration_seconds) * 500 - t.getTime()) })).sort((a, b) => a.d - b.d)[0]?.x;
           if (best) {

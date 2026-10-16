@@ -25,10 +25,10 @@ def test_startup_consumes_existing_uploads_and_preserves_completed_progress(tmp_
                  for n in range(after + 1, 8)]
         return httpx.Response(200, json={'items': items, 'next_cursor': 7, 'has_more': False})
     if kind == 'speech':
-        worker = SpeechWorker(store, 'http://archive.example.invalid', 'synthetic-token',
+        worker = SpeechWorker(store, 'http://archive.example.invalid',
                               SimpleNamespace(voice_model='voice-v1', asr_version='asr-v1'))
     else:
-        worker = TextWorker(store, 'http://archive.example.invalid', 'synthetic-token', None)
+        worker = TextWorker(store, 'http://archive.example.invalid', None)
     worker.archive.close()
     worker.archive = httpx.Client(base_url='http://archive.example.invalid', transport=httpx.MockTransport(feed))
     try:

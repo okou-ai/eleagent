@@ -50,7 +50,6 @@ export function formatAgo(then, now = Date.now(), { locale, timeZone } = {}) {
 }
 
 export function uploadDisposition(status) {
-  if (status === 401 || status === 403) return 'auth';
   if ([400, 409, 413, 415, 422].includes(status)) return 'blocked';
   return 'retry';
 }

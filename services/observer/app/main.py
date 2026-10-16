@@ -1,11 +1,10 @@
 import asyncio
-import hmac
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from fastapi import FastAPI, Depends, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from typing import Literal
 from starlette.datastructures import UploadFile
@@ -99,7 +98,6 @@ def bool_env(name, default=False):
 
 @dataclass
 class Settings:
-    api_token: str
     db_path: str = '/data/scene.sqlite3'
     backend: str = 'mock'
     minicpm_url: str = ''
@@ -115,12 +113,10 @@ class Settings:
     max_new_tokens: int = 320
     compact_observation: bool = False
     archive_url: str = ''
-    archive_token: str = ''
 
     @classmethod
     def env(cls):
-        return cls(api_token=os.getenv('SCENE_API_TOKEN', ''),
-            db_path=os.getenv('SCENE_DB_PATH', '/data/scene.sqlite3'),
+        return cls(db_path=os.getenv('SCENE_DB_PATH', '/data/scene.sqlite3'),
             backend=os.getenv('MINICPM_BACKEND', 'realtime'),
             minicpm_url=os.getenv('MINICPM_URL', ''),
             queue_size=int(os.getenv('SCENE_QUEUE_SIZE', '8')),
@@ -134,15 +130,10 @@ class Settings:
             window_flush_seconds=float(os.getenv('SCENE_WINDOW_FLUSH_SECONDS', '2')),
             max_new_tokens=int(os.getenv('MINICPM_MAX_NEW_TOKENS', '320')),
             compact_observation=bool_env('MINICPM_COMPACT_OBSERVATION'),
-            archive_url=os.getenv('SCENE_ARCHIVE_URL', ''),
-            archive_token=os.getenv('SCENE_ARCHIVE_TOKEN', ''))
+            archive_url=os.getenv('SCENE_ARCHIVE_URL', ''))
 
 def create_app(settings=None, backend_factory=None):
     settings = settings or Settings.env()
-    if not settings.api_token:
-        raise ValueError('Set SCENE_API_TOKEN through owner-managed environment or Docker secret provisioning')
-    if len(settings.api_token) < 16 or settings.api_token.startswith('replace-with-'):
-        raise ValueError('SCENE_API_TOKEN must be a non-placeholder token of at least 16 characters')
     if settings.backend not in ('mock', 'realtime', 'windowed'):
         raise ValueError('MINICPM_BACKEND must be mock, realtime or windowed')
     if settings.backend != 'mock' and not settings.minicpm_url:
@@ -159,8 +150,6 @@ def create_app(settings=None, backend_factory=None):
         raise ValueError('max_new_tokens must be an integer from 1 to 320')
     if type(settings.compact_observation) is not bool:
         raise ValueError('compact_observation must be boolean')
-    if settings.archive_url and len(settings.archive_token) < 16:
-        raise ValueError('SCENE_ARCHIVE_TOKEN is required when archival is enabled')
     Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     service = SceneService(settings, backend_factory)
 
@@ -200,10 +189,6 @@ def create_app(settings=None, backend_factory=None):
             raise HTTPException(404)
         return FileResponse(web_root / name)
 
-
-    def auth(authorization: str = Header(default='')):
-        if not hmac.compare_digest(authorization.encode(), ('Bearer ' + settings.api_token).encode()):
-            raise HTTPException(401, 'Bearer authentication required')
 
     def location_events(meta):
         for fix in meta.locations:
@@ -255,7 +240,7 @@ def create_app(settings=None, backend_factory=None):
             'source': 'ios_core_motion_via_expo_sensors',
         }, dict(event_id=event_id, capture_id=meta.capture_id, started_at=start, ended_at=end, model='expo-sensors-device-motion'))
 
-    @app.get('/v1/observations/latest', dependencies=[Depends(auth)])
+    @app.get('/v1/observations/latest')
     async def latest_observation(request: Request):
         """The newest MiniCPM observation, for the capture page. Only the latest one is exposed."""
         latest = service.latest_observation
@@ -266,8 +251,8 @@ def create_app(settings=None, backend_factory=None):
             return Response(status_code=304, headers={'ETag': etag})
         return JSONResponse(latest, headers={'ETag': etag})
 
-    @app.post('/', dependencies=[Depends(auth)])
-    @app.post('/v1/clips', dependencies=[Depends(auth)], include_in_schema=False)
+    @app.post('/')
+    @app.post('/v1/clips', include_in_schema=False)
     async def mobile_clip(request: Request):
         """The only upload call: multipart `meta` (JSON: clip identity + sensors recorded during it) and `video` (the clip)."""
         if not service.archive:

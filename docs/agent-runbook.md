@@ -8,7 +8,7 @@ Spark 1 runs capture, MiniCPM perception, the graph database, the Graph API and 
 
 Every phase states where it runs, its success evidence, what to do on failure, and whether it is safe to repeat. Finish a phase and record its evidence before starting the next one. If an expected result does not appear, stop at that phase. Do not skip ahead.
 
-Run commands from `deploy/dual-spark` unless a phase says otherwise. Keep a private deployment record outside the repository, for example `<root>/private/` with mode `0700`. Write a small JSON receipt for each phase: time, repository revision, image IDs, counts, checksums and check results. These receipts let a later agent resume from the right phase. They may include host addresses and paths, but never put token values in them.
+Run commands from `deploy/dual-spark` unless a phase says otherwise. Keep a private deployment record outside the repository, for example `<root>/private/` with mode `0700`. Write a small JSON receipt for each phase: time, repository revision, image IDs, counts, checksums and check results. These receipts let a later agent resume from the right phase. They may include host addresses and paths.
 
 ### Rules that apply to every phase
 
@@ -16,10 +16,9 @@ Run commands from `deploy/dual-spark` unless a phase says otherwise. Keep a priv
 - **Never reset worker state to fix a stuck queue.** Observer, recognition, speech and OCR keep cursors and pending queues in their state directories. A worker with no state reads the whole archive from the beginning, so deleting state reprocesses all history.
 - **Never weaken a check.** Do not edit `deploy/models.lock.json`, skip hash verification, or patch a model checkpoint in place. Local runtime changes belong in the converted overlay.
 - **Never open a database with an older engine than the one that last wrote it,** and never run two database processes against one directory.
-- **Credentials stay private.** Never commit `.env`, a rendered `docker compose config`, `docker inspect` output, a control token or TLS keys. Do not print token values to logs or chat.
 - **Ask before downloading large artifacts.** Prefer verified local copies. Get the owner's approval before downloading multi-gigabyte weights, wheels or base images.
 - **Ask before irreversible or production-facing steps:** stopping a production deployment, retiring old services, or deleting anything.
-- **Keep tracked files unchanged on hosts.** Put deployment-specific settings in private Compose override files and the private `.env`, not in tracked Compose files.
+- **Keep tracked files unchanged on hosts.** Put deployment-specific settings in a Compose override file outside the repository and in `.env`, not in tracked Compose files.
 - **Respect model licenses.** The DFlash2 drafter is CC BY-NC-ND 4.0, and the MiniCPM demo application has no explicit source license. See [third-party notices](../THIRD_PARTY_NOTICES.md); confirm the owner accepts them before downloading.
 
 ### Choose a path
@@ -60,9 +59,9 @@ Collect the following and record them:
 | Revision | `git rev-parse HEAD` on both hosts | Identical commit |
 | Existing services | `docker ps -a`, `systemctl list-units --all` | Inventory of anything already using ports or GPUs |
 
-Values that the agent must obtain rather than guess: the private addresses, fabric interface, HCA, rank-0 fabric address, timezone, owner display name and public capture hostname. Ask the owner when they cannot be read from the hosts.
+Values that the agent must obtain rather than guess: the private addresses, fabric interface, HCA, rank-0 fabric address, timezone and owner display name. Ask the owner when they cannot be read from the hosts.
 
-The observer, recognition, speech, Sleep and GPU-manager processes must all run as UID 1000: pause, acknowledgement, readiness and control-token files deliberately use mode `0600`. Clone the repository to the same path on both hosts; the supplied systemd unit assumes `/opt/eleagent`.
+The observer, recognition, speech, Sleep and GPU-manager processes must all run as UID 1000: pause, acknowledgement and readiness files deliberately use mode `0600`. Clone the repository to the same path on both hosts; the supplied systemd unit assumes `/opt/eleagent`.
 
 **Stop if** the revisions differ, the service account is not UID 1000, or another process holds a listed port or GPU and the owner has not approved stopping it.
 
@@ -72,9 +71,9 @@ The observer, recognition, speech, Sleep and GPU-manager processes must all run 
 
 Store the backup outside the active data root, with mode `0700`, on private storage.
 
-1. **Inventory.** Record the old deployment's repository revision, container names, image IDs, mounts, restart policies, environment, Compose configuration and GPU-manager units. Keep it private: it contains credentials. Later phases need it for the cutover and for preserving credentials.
-2. **Quiesce.** Wait until any night run has finished and both GPU managers are idle with no lease. Stop both GPU managers. Stop capture ingress and Sleep on Spark 1; stop recognition, speech, OCR, Graph Sync and the archive on Spark 2. Confirm every writer has exited. Stop the Graph API and the graph database last.
-3. **Copy.** Copy each host's complete data directories, private `.env`, control token, manager configuration and any private TLS or reverse-proxy configuration. Preserve ownership, permissions and symlinks. Include SQLite `-wal` and `-shm` files. Resolve symlinks that point outside the copied roots and back up their targets too; a copied link does not preserve the bytes it references.
+1. **Inventory.** Record the old deployment's repository revision, container names, image IDs, mounts, restart policies, environment, Compose configuration and GPU-manager units. Later phases need it for the cutover and for preserving settings.
+2. **Quiesce.** Wait until any night run has finished and both GPU managers are idle with no lease. Stop both GPU managers. Stop the observer and Sleep on Spark 1; stop recognition, speech, OCR, Graph Sync and the archive on Spark 2. Confirm every writer has exited. Stop the Graph API and the graph database last.
+3. **Copy.** Copy each host's complete data directories, `.env` and manager configuration. Preserve ownership, permissions and symlinks. Include SQLite `-wal` and `-shm` files. Resolve symlinks that point outside the copied roots and back up their targets too; a copied link does not preserve the bytes it references.
 4. **Verify.** Compare SHA-256 for every regular file and every symlink target. Run `PRAGMA integrity_check` on every SQLite copy. Run `neo4j-admin database check` against a disposable copy of the backed-up store, using **the same Neo4j image as the old deployment** and the store owner's UID.
 5. **Receipt.** Record completion time, file count, byte count, checksums, database-check results and the stopped-writer inventory.
 
@@ -207,30 +206,13 @@ Conversion reads the source checkpoints read-only and writes a separate `atlas-o
 
 ## Phase 3: Configure and build
 
-**Where:** both hosts. **Repeatable:** builds yes; credential and manager configuration generation refuse to overwrite.
+**Where:** both hosts. **Repeatable:** builds yes; manager configuration generation refuses to overwrite.
 
-### Private configuration
+### Configuration
 
-New install: generate `.env` once, without printing the credentials, then edit `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE` and `ELEAGENT_OWNER_NAME`:
+Copy `.env.example` to `.env`, then set `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE` and `ELEAGENT_OWNER_NAME`. On the Migration path, take the timezone and owner name from the old deployment, as described in [preserving settings](#preserving-settings).
 
-```sh
-cp .env.example .env
-chmod 600 .env
-python3 - <<'PY'
-from pathlib import Path
-import secrets
-path = Path('.env')
-text = path.read_text()
-for key in ('SCENE_API_TOKEN', 'SCENE_ARCHIVE_TOKEN', 'GRAPH_API_TOKEN', 'NEO4J_PASSWORD'):
-    text = text.replace(key + '=\n', key + '=' + secrets.token_hex(32) + '\n')
-path.write_text(text)
-path.chmod(0o600)
-PY
-```
-
-Migration: create `.env` from the old deployment's values instead, as described in [preserving credentials](#preserving-credentials).
-
-Transfer the identical `.env` privately to the other host. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts. `SCENE_API_TOKEN` is the browser upload token; the archive and Graph API use separate tokens.
+Use the same `.env` on both hosts. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts.
 
 ### Images
 
@@ -248,7 +230,7 @@ docker compose --env-file .env -f compose.spark2.yaml build archive text graph-s
 bash ../atlas/build.sh    # prints the image ID used for conversion and the manager
 ```
 
-Do not save `config` output: interpolation includes credentials. When large dependencies already exist locally, reuse them instead of downloading again:
+When large dependencies already exist locally, reuse them instead of downloading again:
 
 | Image | Option | Effect |
 | --- | --- | --- |
@@ -262,20 +244,7 @@ Do not save `config` output: interpolation includes credentials. When large depe
 
 ### GPU managers
 
-The managers are systemd host services outside Compose. As the UID-1000 account, generate one control token on Spark 1 and copy exactly the same file privately to Spark 2:
-
-```sh
-python3 - <<'PY'
-from pathlib import Path
-import os, secrets
-path = Path('/srv/eleagent/data/gpu-manager/control.secret')
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, 'w') as output:
-    output.write(secrets.token_hex(32) + '\n')
-PY
-```
-
-Generate each host's configuration. Angle-bracket values are required inputs from Phase 0, not defaults:
+The managers are systemd host services outside Compose. Generate each host's configuration as the UID-1000 account. Angle-bracket values are required inputs from Phase 0, not defaults:
 
 ```sh
 set -a; . ./.env; set +a
@@ -302,7 +271,7 @@ sudo systemctl enable --now eleagent-gpu-manager.service
 
 The manager timezone must equal `ELEAGENT_TIMEZONE`. The night window starts at 00:30, permits acquisition before 05:00, and ends at 05:30 local time. On Spark 1 the manager stops only `eleagent-minicpm`; on Spark 2 only `eleagent-recognition` and `eleagent-speech`. The observer and CPU services keep running.
 
-**Success:** all images exist with recorded IDs; `config --quiet` passes on both hosts; `systemctl is-active eleagent-gpu-manager` is `active`, and `GET http://<private-address>:9210/status` with the control token reports `idle` with no lease on both hosts.
+**Success:** all images exist with recorded IDs; `config --quiet` passes on both hosts; `systemctl is-active eleagent-gpu-manager` is `active`, and `GET http://<private-address>:9210/status` reports `idle` with no lease on both hosts.
 **On failure:** registry or network errors during builds are not reasons to edit Dockerfiles. Use a reuse option above, or report the missing dependency and ask whether a download is approved.
 
 ## Phase 4: Migrate data
@@ -311,19 +280,16 @@ The manager timezone must equal `ELEAGENT_TIMEZONE`. The night window starts at 
 
 Phase 4 moves the old deployment's latest data into the new data root. Eleagent then becomes the deployment that runs from now on; the old core services are not started again.
 
-### Preserving credentials
+### Preserving settings
 
-The new production `.env` must reuse the old deployment's values. Do not generate new ones:
+The new `.env` must reuse these values from the old deployment:
 
 | Variable | Why it must be preserved |
 | --- | --- |
-| `SCENE_API_TOKEN` | Phones, bookmarks and QR codes already carry it |
-| `SCENE_ARCHIVE_TOKEN`, `GRAPH_API_TOKEN` | Existing internal clients and graph readers use them |
-| `NEO4J_PASSWORD` | An existing database keeps its stored password; the container variable only sets the password of a new database |
 | `ELEAGENT_TIMEZONE` | Diary days, sleep dates and the night window are computed in it |
 | `ELEAGENT_OWNER_NAME` | Keeps the Sleep agent's owner identity unchanged |
 
-Read these values from the old deployment's private configuration or from the Phase 1 inventory. Write them straight into a mode-0600 `.env` without printing them. Assert that the same credential agrees across every old service that uses it. Use the same file on both hosts.
+Read them from the old deployment's configuration or from the Phase 1 inventory. The graph database runs without authentication, so users stored in a migrated database are not used.
 
 ### Keep the graph engine version
 
@@ -339,7 +305,7 @@ The tracked Compose file pins a default Neo4j image. Before starting the migrate
 
 An older engine must never open a store written by a newer one. Upgrading the engine is a separate, explicitly approved operation with its own backup.
 
-The same private override is the place for other deployment-specific settings carried from the old stack. For example, if the existing HTTPS ingress forwards to a different observer listener or uses TLS to the observer, configure that in the override rather than in tracked files.
+The same override is the place for other deployment-specific settings carried from the old stack, rather than tracked files.
 
 ### Copy
 
@@ -373,7 +339,7 @@ docker compose --env-file .env -f compose.spark2.yaml up -d --no-build
 docker compose --env-file .env -f compose.spark1.yaml up -d --no-build graph minicpm observer graph-api
 ```
 
-Wait for readiness: Neo4j healthy, MiniCPM `http://127.0.0.1:22400/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `python3 ../../runtime/gpu-manager/ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm that `GET http://127.0.0.1:8080/` returns the page and that an unauthenticated `POST /` returns `401`.
+Wait for readiness: Neo4j healthy, MiniCPM `http://127.0.0.1:22400/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `python3 ../../runtime/gpu-manager/ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm that `GET http://127.0.0.1:8080/` returns the page.
 
 On the Migration path, also confirm that the data was carried over before starting `sleep`:
 
@@ -383,7 +349,7 @@ On the Migration path, also confirm that the data was carried over before starti
 | Worker progress | Every observer, recognition, speech and OCR cursor equals the archive head; pending queues are empty or match the old values |
 | No reprocessing | Worker event counts do not jump after startup |
 | Identity data | Entity, sample and voice-identity counts equal the old deployment's |
-| Graph | `GET http://127.0.0.1:22403/v1/graph/entities` with the preserved `GRAPH_API_TOKEN` returns the old data |
+| Graph | `GET http://127.0.0.1:22403/v1/graph/entities` returns the old data |
 | Sleep state | `scheduler.json` shows the last day the old deployment slept |
 
 Then, with both managers `idle`, start the scheduler on Spark 1:
@@ -394,16 +360,16 @@ docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep
 
 Its first run is the next local night between 00:30 and 05:00 in `ELEAGENT_TIMEZONE`. Do not trigger a manual night run or change the timezone to force one.
 
-Keep internal listeners private. Only the HTTPS reverse proxy is reachable by capture clients:
+No service authenticates its clients. Keep every listener on the private network:
 
 | Listener | Bind |
 | --- | --- |
-| Web capture | Spark 1 loopback `8080`, behind HTTPS |
+| Web capture | Spark 1 loopback `8080` |
 | Graph API | Spark 1 loopback `22403` |
 | MiniCPM worker / backend | Spark 1 loopback `22400` / `22500` |
 | Neo4j Bolt | Spark 1 private address `7687`; HTTP console disabled |
 | Archive | Spark 2 private address `22401` |
-| GPU managers | Each host's private address `9210`, bearer authenticated |
+| GPU managers | Each host's private address `9210` |
 | GLM HTTP | Spark 1 loopback `8893`, during Sleep only |
 | Metrics | Host loopback, ports set in each Compose service |
 
@@ -415,7 +381,7 @@ After the new stack is running, ask the owner before this step. Then:
 
 1. Stop the old core containers and set their restart policy to `no` (`docker update --restart=no`). Do not remove them.
 2. Stop and disable the old GPU manager units. Only the new `eleagent-gpu-manager` stays enabled.
-3. Point surrounding services, such as the HTTPS ingress, tunnels and monitoring, at the new containers. Keep the public origin unchanged.
+3. Point surrounding services, such as monitoring, at the new containers.
 4. Keep the old data directories, the old containers and the Phase 1 backup. Removing them needs a separate retention decision from the owner.
 5. Write the cutover receipt: preserved counts, image IDs, private override path, retired services and backup location.
 
@@ -425,17 +391,7 @@ After the new stack is running, ask the owner before this step. Then:
 
 **Where:** Spark 1 and the owner's phone. **Repeatable:** yes.
 
-1. Phones allow camera and microphone access only over HTTPS. Terminate TLS in front of `127.0.0.1:8080` and forward every path, including `POST /`. For example, with Caddy and a domain the owner controls:
+1. The owner opens the capture page on the phone. The page starts recording as soon as it opens. The owner allows the camera, microphone and location, keeps the page in the foreground, and speaks normally for 10–15 seconds. The page has two controls: record/pause, and switching between the back and front cameras. Switching apps or locking the phone pauses recording, and returning to the page resumes it. Clips wait in the browser's bounded queue until the server confirms archival, so browser data must not be cleared while uploads are pending.
+2. Confirm on the servers: new clips archived, MiniCPM, recognition, OCR and speech events for them, a non-empty transcript, and queues draining. Short queues after a burst of buffered uploads are normal; a growing backlog is not.
 
-   ```caddyfile
-   capture.example.com {
-       reverse_proxy 127.0.0.1:8080
-   }
-   ```
-
-   A private VPN with a certificate the phone trusts also works. Never disable certificate validation. Confirm `GET /` over HTTPS from outside the private network.
-2. Give the owner a private link `https://<capture-host>/#token=<URL-encoded SCENE_API_TOKEN>`, or a QR code of it. The page reads the token from the fragment, removes it from the address bar and keeps it on that device; fragments are not sent to the server, and the page never displays the token. Opening a new link replaces it. Share it only through a private channel, and store any QR image with restricted visibility.
-3. The page starts recording as soon as it opens. The owner allows the camera, microphone and location, keeps the page in the foreground, and speaks normally for 10–15 seconds. The page has two controls: record/pause, and switching between the back and front cameras. Switching apps or locking the phone pauses recording, and returning to the page resumes it. Clips wait in the browser's bounded queue until the server confirms archival, so browser data must not be cleared while uploads are pending.
-4. Confirm on the servers: new clips archived, MiniCPM, recognition, OCR and speech events for them, a non-empty transcript, and queues draining. Short queues after a burst of buffered uploads are normal; a growing backlog is not.
-
-**On failure:** check upload responses first. `401` means a wrong token; a conflict means a capture identity was reused for different bytes. Then check that each service is running and its queue is moving.
+**On failure:** check upload responses first; a conflict means a capture identity was reused for different bytes. Then check that each service is running and its queue is moving.

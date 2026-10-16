@@ -3,7 +3,6 @@
 import argparse
 import datetime as dt
 import fcntl
-import hmac
 import http.client
 import http.server
 import ipaddress
@@ -13,7 +12,6 @@ from pathlib import Path
 import re
 import signal
 import socket
-import stat
 import subprocess
 import threading
 import time
@@ -88,13 +86,6 @@ class Manager:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.process_lock = self.path.with_suffix('.lock').open('a')
         fcntl.flock(self.process_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        secret_path = Path(config['secret_file'])
-        st = secret_path.stat()
-        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600:
-            raise RuntimeError('secret_permissions')
-        self.secret = secret_path.read_text().strip()
-        if len(self.secret) < 32:
-            raise RuntimeError('secret_too_short')
         self.s = json.loads(self.path.read_text()) if self.path.exists() else {
             'version': 1, 'phase': 'idle', 'lease': None, 'completed_lease': None}
         if self.s.get('version') != 1:
@@ -352,7 +343,7 @@ class Manager:
                 with self.lock:
                     self.s['error_type'] = type(exc).__name__
                     # Exception messages are fixed tokens authored here. Never log
-                    # subprocess output, secret values, paths or data payloads.
+                    # subprocess output, paths or data payloads.
                     if isinstance(exc, RuntimeError) and re.fullmatch('[a-z_]+', str(exc)):
                         self.s['error_type'] = str(exc)
                     self.save()
@@ -419,20 +410,13 @@ def handler(manager):
             self.end_headers()
             self.wfile.write(body)
 
-        def authorized(self):
-            return hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + manager.secret)
-
         def do_GET(self):
-            if not self.authorized():
-                self.reply(401, {'error_type': 'unauthorized'})
-            elif self.path != '/status':
+            if self.path != '/status':
                 self.reply(404, {'error_type': 'not_found'})
             else:
                 self.reply(200, manager.status())
 
         def do_POST(self):
-            if not self.authorized():
-                return self.reply(401, {'error_type': 'unauthorized'})
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 256 or self.headers.get('Transfer-Encoding'):
@@ -454,7 +438,7 @@ def handler(manager):
 
 
 def validate(config):
-    required = {'listen_ip', 'secret_file', 'state_file', 'daytime_containers', 'rank_name',
+    required = {'listen_ip', 'state_file', 'daytime_containers', 'rank_name',
                 'rank_image', 'rank_label', 'rank_create_command', 'pause_files', 'drain_commands', 'ready_commands',
                 'allowed_bind_addresses', 'timezone', 'acquire_start_minute', 'acquire_end_minute', 'hard_stop_minute'}
     if not required <= config.keys():

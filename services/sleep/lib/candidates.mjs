@@ -11,7 +11,6 @@ const CONVERSATION_GAP_MS = 90_000;
 const CONVERSATION_MIN_LINES = 3, CONVERSATION_MIN_SECONDS = 15;
 const CROPS_PER_CANDIDATE = 6;
 
-const auth = () => ({ Authorization: `Bearer ${process.env.SCENE_ARCHIVE_TOKEN}` });
 const ARCHIVE_URL = () => process.env.ARCHIVE_URL || 'http://archive:22401';
 
 /** File name of a cover crop: {media_id, offset, box: [x, y, w, h], w, h} -> stable hash. */
@@ -28,7 +27,7 @@ export async function crop(cover, dir) {
     if (w < 4 || h < 4) return null;
     const url = `${ARCHIVE_URL()}/v1/archive/media/${cover.media_id}/frame?t=${Number(cover.offset || 0).toFixed(3)}` +
       `&box=${[x, y, w, h].map((v) => v.toFixed(1)).join(',')}&ref_w=${cover.w}&ref_h=${cover.h}&pad=0.15&size=256`;
-    const res = await fetch(url, { headers: auth(), signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) return null;
     fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
     return file;

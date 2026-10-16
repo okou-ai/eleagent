@@ -752,8 +752,7 @@ def main():
     sys.path.insert(0, os.environ.get('RECOGNITION_SOURCE_DIR', str(Path(__file__).resolve().parent.parent / 'recognition')))
     from entity_worker import metrics
     metrics.serve()
-    driver = GraphDatabase.driver(os.environ.get('GRAPH_URL', 'bolt://neo4j:7687'),
-                                  auth=tuple(os.environ['NEO4J_AUTH'].split('/', 1)))
+    driver = GraphDatabase.driver(os.environ.get('GRAPH_URL', 'bolt://neo4j:7687'), auth=None)
     interval = float(sys.argv[1]) if len(sys.argv) > 1 else 0
     while True:
         NOW = datetime.now(timezone.utc).isoformat()

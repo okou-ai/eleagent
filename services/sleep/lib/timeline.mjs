@@ -8,8 +8,8 @@ export function interval(node) {
 }
 
 export async function readTimeline(capture, start, end) {
-  const base = process.env.ARCHIVE_URL, token = process.env.SCENE_ARCHIVE_TOKEN;
-  if (!base || !token) throw new Error('Archive access is not configured');
+  const base = process.env.ARCHIVE_URL;
+  if (!base) throw new Error('Archive access is not configured');
   if (!capture || !Number.isFinite(start) || !Number.isFinite(end) || end < start) throw new Error('Invalid evidence interval');
   const byKind = await Promise.all(['minicpm', 'speech'].map(async (kind) => {
     const out = [], cursors = new Set();
@@ -18,7 +18,7 @@ export async function readTimeline(capture, start, end) {
       const q = new URLSearchParams({ capture_id: capture, kind, started_at: new Date(start).toISOString(), ended_at: new Date(end).toISOString(), limit: '100' });
       if (after) q.set('after', after);
       const response = await fetch(`${base}/v1/archive/events?${q}`, {
-        headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok) throw new Error(`Archive timeline unavailable (HTTP ${response.status})`);
       const data = await response.json();
@@ -48,8 +48,8 @@ export function timelineLine(event) {
 export async function readMedia(capture, start, end) {
   // Speech windows may cross the selected event boundary. Resolve clips by time instead of copying
   // all of their references, which could attach footage from outside the semantic event.
-  const base = process.env.ARCHIVE_URL, token = process.env.SCENE_ARCHIVE_TOKEN;
-  if (!base || !token) throw new Error('Archive access is not configured');
+  const base = process.env.ARCHIVE_URL;
+  if (!base) throw new Error('Archive access is not configured');
   if (!capture || !Number.isFinite(start) || !Number.isFinite(end) || end < start) throw new Error('Invalid evidence interval');
   const out = new Set(), cursors = new Set();
   let after;
@@ -57,7 +57,7 @@ export async function readMedia(capture, start, end) {
     const q = new URLSearchParams({ capture_id: capture, started_at: new Date(start).toISOString(), ended_at: new Date(end).toISOString(), limit: '100' });
     if (after) q.set('after', after);
     const r = await fetch(`${base}/v1/archive/media?${q}`, {
-      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(15_000),
     });
     if (!r.ok) throw new Error(`Archive media unavailable (HTTP ${r.status})`);
     const data = await r.json();

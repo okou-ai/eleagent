@@ -140,13 +140,13 @@ class SmallOCR:
 
 
 class TextWorker:
-    def __init__(self, store, archive_url, token, reader):
+    def __init__(self, store, archive_url, reader):
         self.store, self.reader = store, reader
         self.cursor_key = CURSOR_KEY
         self.focus_jobs = []
         self.archive = httpx.Client(
             base_url=archive_url.rstrip('/'), timeout=httpx.Timeout(60, connect=3),
-            headers={'Authorization': 'Bearer ' + token}, follow_redirects=False,
+            follow_redirects=False,
         )
 
     def feed(self, after):
@@ -399,7 +399,7 @@ def main():
     reader = SmallOCR(args.model_dir, args.threads)
     # Diagnostic mode never opens the production worker state database.
     worker = TextWorker(None if args.try_media else Store(args.state),
-                        os.environ['ARCHIVE_URL'], os.environ['SCENE_ARCHIVE_TOKEN'], reader)
+                        os.environ['ARCHIVE_URL'], reader)
     if args.try_media:
         response = worker.archive.get('/v1/archive/media/' + args.try_media)
         response.raise_for_status()

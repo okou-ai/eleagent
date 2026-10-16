@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI
 
 OBSERVER = Path(__file__).resolve().parents[1]
 ROOT = OBSERVER.parents[1]
@@ -30,7 +30,6 @@ spec.loader.exec_module(package)
 from archive_test_app.archive import Archive
 from archive_test_app.archive_api import install_archive_routes
 
-TOKEN = 'synthetic-local-test-token'
 
 
 class WebIngestTest(unittest.IsolatedAsyncioTestCase):
@@ -57,19 +56,14 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         directory = Path(self.temp.name)
         self.archive = Archive(str(directory / 'archive.sqlite3'), str(directory / 'media'), 0)
         archive_app = FastAPI()
-
-        def auth(authorization: str = Header(default='')):
-            if authorization != 'Bearer ' + TOKEN:
-                raise HTTPException(401)
-
-        install_archive_routes(archive_app, self.archive, auth)
+        install_archive_routes(archive_app, self.archive)
         self.archive_app = archive_app
-        self.app = create_app(Settings(api_token=TOKEN, backend='mock', db_path=str(directory / 'observer.sqlite3'),
-            archive_url='http://archive.test', archive_token=TOKEN))
+        self.app = create_app(Settings(backend='mock', db_path=str(directory / 'observer.sqlite3'),
+            archive_url='http://archive.test'))
         self.service = self.app.state.service
         await self.service.archive.client.aclose()
         self.service.archive.client = httpx.AsyncClient(base_url='http://archive.test',
-            transport=httpx.ASGITransport(app=archive_app), headers={'Authorization': 'Bearer ' + TOKEN})
+            transport=httpx.ASGITransport(app=archive_app))
         self.client = httpx.AsyncClient(base_url='http://observer.test', transport=httpx.ASGITransport(app=self.app))
 
     async def asyncTearDown(self):
@@ -84,8 +78,8 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
             'locations': [{'captured_at': '2026-01-05T17:30:00Z', 'latitude': 37.789, 'longitude': -122.401, 'accuracy_m': 25}],
             'capture_gaps': [{'started_at': '2026-01-05T17:29:00Z', 'ended_at': '2026-01-05T17:30:00Z', 'reason': 'page_hidden'}]}
 
-    async def post(self, format='webm', meta=None, token=TOKEN, path='/'):
-        return await self.client.post(path, headers={'Authorization': 'Bearer ' + token},
+    async def post(self, format='webm', meta=None, path='/'):
+        return await self.client.post(path,
             data={'meta': json.dumps(meta or self.meta())},
             files={'video': ('clip.' + format, self.media[format].read_bytes(), 'video/webm' if 'webm' in format else 'video/mp4')})
 
@@ -93,7 +87,7 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         # Container modules live at /app/app/main.py, shallower than a repository checkout.
         with patch.object(observer_main, '__file__', '/app/app/main.py'), patch.dict(
                 'os.environ', {'SCENE_WEB_ROOT': str(ROOT / 'apps/web')}):
-            app = create_app(Settings(api_token=TOKEN, backend='mock',
+            app = create_app(Settings(backend='mock',
                 db_path=str(Path(self.temp.name) / 'container-observer.sqlite3')))
         try:
             async with httpx.AsyncClient(base_url='http://container.test', transport=httpx.ASGITransport(app=app)) as client:
@@ -103,19 +97,18 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await app.state.service.stop()
 
-    async def test_capture_page_is_public_but_root_upload_requires_bearer(self):
+    async def test_capture_page_and_upload_need_no_credentials(self):
         page = await self.client.get('/')
         self.assertEqual(page.status_code, 200)
         self.assertIn('Eleagent', page.text)
         self.assertEqual(page.headers['cache-control'], 'no-store')
         self.assertIn("frame-ancestors 'none'", page.headers['content-security-policy'])
-        self.assertEqual((await self.post(token='wrong')).status_code, 401)
+        self.assertEqual((await self.post()).status_code, 200)
         self.assertEqual((await self.client.get('/assets/requirements.txt')).status_code, 404)
 
-    async def test_latest_observation_is_authenticated_cached_and_survives_restart(self):
-        headers = {'Authorization': 'Bearer ' + TOKEN}
-        self.assertEqual((await self.client.get('/v1/observations/latest')).status_code, 401)
-        self.assertEqual((await self.client.get('/v1/observations/latest', headers=headers)).status_code, 204)
+    async def test_latest_observation_is_cached_and_survives_restart(self):
+        headers = {}
+        self.assertEqual((await self.client.get('/v1/observations/latest')).status_code, 204)
         self.service.context_from, self.service.context_to = '2026-01-05T17:30:00+00:00', '2026-01-05T17:30:05+00:00'
         self.service.save_turn({'generated_text': '   ', 'source_packets': []})
         self.assertEqual((await self.client.get('/v1/observations/latest', headers=headers)).status_code, 204)
@@ -176,8 +169,7 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         async def connect_archive(value):
             await value.client.aclose()
             value.client = httpx.AsyncClient(base_url='http://archive.test',
-                transport=httpx.ASGITransport(app=self.archive_app),
-                headers={'Authorization': 'Bearer ' + TOKEN})
+                transport=httpx.ASGITransport(app=self.archive_app))
 
         await connect_archive(feeder)
         await feeder.poll()
@@ -190,7 +182,7 @@ class WebIngestTest(unittest.IsolatedAsyncioTestCase):
         feeder.db.close()
 
         # Restart against the same durable state with one clip still pending.
-        restarted = ArchiveFeeder(self.service, 'http://archive.test', TOKEN,
+        restarted = ArchiveFeeder(self.service, 'http://archive.test',
             str(Path(self.temp.name) / 'minicpm-feed.sqlite3'))
         self.service.feeder = restarted
         await connect_archive(restarted)

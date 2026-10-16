@@ -163,11 +163,11 @@ class Budget:
 
 class Memory:
     """Read-only recall through the existing sleep cluster map, independent of cue modality."""
-    def __init__(self, url, user, password):
+    def __init__(self, url):
         self.driver = None
-        if url and password:
+        if url:
             from neo4j import AsyncGraphDatabase
-            self.driver = AsyncGraphDatabase.driver(url, auth=(user, password), connection_timeout=3)
+            self.driver = AsyncGraphDatabase.driver(url, auth=None, connection_timeout=3)
         self.cluster_map, self.map_at = {}, 0.0
         self.entities = {}
 
@@ -236,10 +236,10 @@ class Memory:
 
 
 class Situation:
-    def __init__(self, archive_url, archive_token, graph_url=None, graph_user='neo4j', graph_password=None):
+    def __init__(self, archive_url, graph_url=None):
         self.client = httpx.AsyncClient(base_url=archive_url.rstrip('/'), trust_env=False,
-            headers={'Authorization': 'Bearer ' + archive_token}, timeout=httpx.Timeout(5, connect=2)) if archive_url else None
-        self.memory = Memory(graph_url, graph_user, graph_password)
+            timeout=httpx.Timeout(5, connect=2)) if archive_url else None
+        self.memory = Memory(graph_url)
         self.budget = Budget()
         self.history = {}    # capture_id -> deque[(captured_at, line)]
         self.cache = {}      # capture_id -> timestamped archive events; identity is resolved only at build time
@@ -249,9 +249,7 @@ class Situation:
 
     @classmethod
     def from_env(cls, settings):
-        auth = os.getenv('NEO4J_AUTH', '')
-        user, _, password = auth.partition('/')
-        return cls(settings.archive_url, settings.archive_token, os.getenv('GRAPH_URL'), user or 'neo4j', password or None)
+        return cls(settings.archive_url, os.getenv('GRAPH_URL'))
 
     def start(self):
         self.task = asyncio.create_task(self.loop())

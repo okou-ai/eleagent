@@ -132,14 +132,13 @@ class Models:
 
 
 class SpeechWorker:
-    def __init__(self, store, archive_url, token, models, glossary=DEFAULT_GLOSSARY, window_clips=6, idle_seconds=45, reprocess_history=False):
+    def __init__(self, store, archive_url, models, glossary=DEFAULT_GLOSSARY, window_clips=6, idle_seconds=45, reprocess_history=False):
         import httpx
         self.store, self.models, self.glossary = store, models, glossary
         self.window_clips, self.idle_seconds, self.reprocess_history = window_clips, idle_seconds, reprocess_history
         self.pipeline = PIPELINE + '-' + fingerprint(models.voice_model, models.asr_version, glossary, VAD, ANCHOR_SIM, MATCH_SIM, ASSIGN_SIM)[:16]
         self.cursor_key = 'speech_cursor:' + self.pipeline
-        self.archive = httpx.Client(base_url=archive_url.rstrip('/'), timeout=httpx.Timeout(60, connect=3),
-                                    headers={'Authorization': 'Bearer ' + token}, trust_env=False)
+        self.archive = httpx.Client(base_url=archive_url.rstrip('/'), timeout=httpx.Timeout(60, connect=3), trust_env=False)
 
     def feed(self, after):
         response = self.archive.get('/v1/archive/feed', params={'after': after, 'limit': 100})
@@ -333,7 +332,7 @@ def main():
     glossary = [x.strip() for x in Path(a.glossary_file).read_text().splitlines() if x.strip()] if a.glossary_file else DEFAULT_GLOSSARY
     night_pause = NightPause('speech')
     models = Models(a.weights, a.campplus, a.asr, a.device, a.language)
-    worker = SpeechWorker(Store(a.state), os.environ['ARCHIVE_URL'], os.environ['SCENE_ARCHIVE_TOKEN'], models, glossary,
+    worker = SpeechWorker(Store(a.state), os.environ['ARCHIVE_URL'], models, glossary,
                           a.window_clips, a.idle_seconds, a.reprocess_history)
     if a.replay_capture:
         items, after = [], 0
