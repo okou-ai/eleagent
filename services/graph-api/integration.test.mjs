@@ -4,14 +4,21 @@ import { once } from 'node:events';
 import http from 'node:http';
 import { after, before, describe, test } from 'node:test';
 import neo4j from 'neo4j-driver';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { GraphStore } from './graph.mjs';
 import { createApiServer } from './server.mjs';
+import { resourceAuth } from './test-resource-auth.mjs';
 
 // This suite may write only to the explicitly provisioned, empty test database.
 // Never substitute a production URL or a default password here.
 const testUrl = process.env.TEST_NEO4J_URL;
 const allowedTestUrl = 'bolt://127.0.0.1:17687';
+// These are graph/backend and protocol tests with a fake resource-auth boundary.
+// Actual OAuth is covered by auth.test.mjs and oauth-integration.test.mjs.
 const token = `integration-${randomUUID()}`;
+// Separate private signing fixture; production never exposes cursor keys as auth credentials.
+const cursorKey = `integration-cursor-${randomUUID()}`;
 const runId = randomUUID();
 const id = (suffix) => `integration-${runId}-${suffix}`;
 const group = (name) => `${runId}-${name}`;
@@ -112,7 +119,7 @@ describe('generic graph API against an isolated real Neo4j', {
       CREATE (a)-[:LINK]->(empty)
     `, { a: id('a'), e: id('e'), state: id('internal') });
     initialCounts = await counts();
-    server = createApiServer({ store: new GraphStore(driver), token });
+    server = createApiServer({ store: new GraphStore(driver), cursorKey, ...resourceAuth(token) });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     origin = `http://127.0.0.1:${server.address().port}`;
@@ -139,6 +146,32 @@ describe('generic graph API against an isolated real Neo4j', {
       }
     }
     if (countFailure) throw countFailure;
+  });
+
+  test('standard MCP client queries the real graph without mutations', async () => {
+    const client = new Client({ name: 'real-neo4j-mcp-integration', version: '1.0.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }));
+      assert.equal((await client.listTools()).tools.length, 6);
+      const call = async (name, args) => {
+        const result = await client.callTool({ name, arguments: args });
+        assert.ok(!result.isError, JSON.stringify(result));
+        return result.structuredContent;
+      };
+      const search = await call('search_entities', { filter: { group: group('graph') }, limit: 2 });
+      assert.equal(search.entities.length, 2);
+      assert.ok(search.next_cursor);
+      const next = await call('search_entities', { filter: { group: group('graph') }, limit: 2, cursor: search.next_cursor });
+      assert.equal(next.entities.length, 2);
+      assert.ok(!next.entities.some((e) => search.entities.some((x) => x.id === e.id)));
+      assert.equal((await call('get_entity', { id: id('unknown') })).properties.arbitraryField, 'MagicValue is searchable');
+      assert.equal((await call('list_entity_links', { id: id('a') })).links.length, 3);
+      const graph = await call('get_subgraph', { ids: [id('a')], depth: 1 });
+      assert.equal(graph.entities.length, 4);
+      assert.deepEqual(await counts(), initialCounts);
+    } finally { await client.close(); }
   });
 
   async function request(path, { method = 'GET', body, authorization = `Bearer ${token}`, rawBody } = {}) {
@@ -202,6 +235,7 @@ describe('generic graph API against an isolated real Neo4j', {
     for (const [path, options] of routes) {
       assertError(await request(path, { ...options, authorization: null }), 401);
       assertError(await request(path, { ...options, authorization: 'Bearer incorrect' }), 401);
+      assertError(await request(path, { ...options, authorization: `Bearer ${cursorKey}` }), 401);
     }
   });
 
@@ -338,8 +372,10 @@ describe('generic graph API against an isolated real Neo4j', {
   });
 
   test('even correctly signed cursor payloads must have a valid shape', async () => {
-    // A bearer-token holder can derive the cursor key. Signing is not validation.
-    const key = createHmac('sha256', token).update('scene-graph-api/cursor/v1').digest();
+    // Test-only access to the private signing fixture lets us exercise payload
+    // validation independently of signatures. Authenticated production clients
+    // cannot derive this key from their OAuth access tokens.
+    const key = createHmac('sha256', cursorKey).update('scene-graph-api/cursor/v1').digest();
     const signPayload = (payload) => {
       const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
       return `${data}.${createHmac('sha256', key).update(data).digest('base64url')}`;

@@ -3,17 +3,17 @@ import { CaptureState, CLIP_MS, MAX_CLIP_BYTES, bufferHasRoom, bufferRecovered, 
 import { openQueue } from './queue.js';
 
 const $ = id => document.getElementById(id);
-const TOKEN_KEY = 'eleagent-token';
 const CAMERA_KEY = 'eleagent-camera';
 const STORAGE_FULL = 'Storage full';
 const state = new CaptureState();
+// Migrate devices that previously used private capture links. Never read the old secret.
+try { localStorage.removeItem('eleagent-token'); } catch { /* Storage can be unavailable in private browsing. */ }
 let queue, stream, recorder, wakeLock, clipTimer, locationWatch, locationFix, ticker, releaseTab, uploadTimer;
 let session = null, ready = false, flipping = false, uploading = false, requestingWake = false;
-let fatal = null, problem = null, blocked = null, uploadIssue = null;
+let fatal = null, problem = null, blocked = null, uploadIssue = null, signInNavigationReady = false;
 let pending = { count: 0, bytes: 0 };
 let recordedMs = 0, recordingSince = 0;
 let observation = null, observationTag = null, observationTimer, observing = false;
-let token = remembered(TOKEN_KEY)?.trim() || '';
 let camera = remembered(CAMERA_KEY) === 'front' ? 'front' : 'back';
 
 function remembered(key) {
@@ -23,24 +23,24 @@ function remember(key, value) {
   try { localStorage.setItem(key, value); } catch { /* Private browsing can refuse storage; the value still lasts this visit. */ }
 }
 
-// The access token only arrives through a private link. It is kept on this device and never shown.
-function consumeTokenLink() {
-  const linked = new URLSearchParams(window.location.hash.slice(1)).get('token');
-  if (linked === null) return;
-  history.replaceState(history.state, '', window.location.pathname + window.location.search);
-  if (linked.trim().length < 16) return;
-  token = linked.trim();
-  remember(TOKEN_KEY, token);
-  blocked = null;
+// Authentication belongs to the gateway; never receive or store observer credentials.
+function signIn() {
+  if (blocked === 'auth') return;
+  blocked = 'auth';
   clearTimeout(uploadTimer);
+  clearTimeout(observationTimer);
+  pause('capture_interrupted');
   render();
-  void pollObservation();
-  if (!ready) return;
-  void upload();
-  // A newly scanned link is a request to record unless the owner paused deliberately.
-  if (state.pauseReason !== 'user_pause') void start();
+  // Pause stops the recorder; its last segment must reach IndexedDB before navigation.
+  void Promise.resolve(session).catch(() => {}).then(() => {
+    signInNavigationReady = true;
+    window.location.assign('/auth/sign-in?return_to=/');
+  });
 }
-consumeTokenLink();
+function sessionExpired(response) {
+  return response.type === 'opaqueredirect' || response.status === 401 || response.status === 403 ||
+    (response.status >= 300 && response.status < 400 && response.status !== 304);
+}
 
 function elapsed() {
   return recordedMs + (recordingSince ? performance.now() - recordingSince : 0);
@@ -48,8 +48,7 @@ function elapsed() {
 function statusView() {
   if (fatal) return { text: fatal, tone: 'error' };
   if (!ready) return { text: '' };
-  if (!token) return { text: 'Scan your capture link', tone: 'error' };
-  if (blocked === 'auth') return { text: 'Link rejected · Scan again', tone: 'error' };
+  if (blocked === 'auth') return { text: 'Session expired · Sign in to resume. Saved clips remain on this device.', tone: 'error' };
   if (blocked === 'clip') return { text: 'Upload rejected', tone: 'error' };
   let view;
   if (state.phase === 'recording' && !flipping) view = { text: formatElapsed(elapsed()), tone: 'live' };
@@ -66,7 +65,7 @@ function render() {
   const active = ['recording', 'acquiring'].includes(state.phase) || flipping;
   $('shutter').classList.toggle('recording', active);
   $('shutter').setAttribute('aria-label', active ? 'Pause' : 'Record');
-  $('shutter').disabled = !ready || !token || !!blocked || !!fatal;
+  $('shutter').disabled = !ready || !!blocked || !!fatal;
   $('flip').disabled = !ready || !!fatal || flipping;
 }
 async function refreshQueue() {
@@ -182,10 +181,12 @@ function start() {
   return session;
 }
 async function record() {
-  if (!ready || !token || blocked || fatal || !['idle', 'paused'].includes(state.phase)) return;
+  if (!ready || blocked || fatal || !['idle', 'paused'].includes(state.phase)) return;
   // A start requested in the background waits for the page to return.
   if (document.hidden) { state.pause('page_hidden'); return; }
   try { await refreshQueue(); } catch { fatal = 'Storage unavailable'; ready = false; return; }
+  // A concurrent observation request may have expired the session while storage was loading.
+  if (!ready || blocked || fatal) return;
   if (!bufferHasRoom(pending)) { problem = STORAGE_FULL; return; }
   // Resuming the same lens continues its capture; a different lens is a new capture.
   const resume = state.phase === 'paused' && captureCamera(state.captureId) === camera;
@@ -224,7 +225,7 @@ async function record() {
   }
 }
 function resumeIfAllowed() {
-  if (session || flipping || !ready || !token || blocked || fatal || document.hidden) return;
+  if (session || flipping || !ready || blocked || fatal || document.hidden) return;
   if (problem === STORAGE_FULL || state.pauseReason === 'buffer_full') {
     if (bufferRecovered(pending)) void start();
   } else if (state.phase === 'idle' ? !problem : state.phase === 'paused' && resumesAutomatically(state.pauseReason)) {
@@ -255,7 +256,7 @@ async function flip() {
 }
 
 async function upload() {
-  if (!ready || uploading || blocked || !token) return;
+  if (!ready || uploading || blocked) return;
   if (!navigator.onLine) { uploadIssue = 'offline'; render(); return; }
   uploading = true;
   clearTimeout(uploadTimer);
@@ -263,7 +264,6 @@ async function upload() {
     while (!blocked && navigator.onLine) {
       const item = await queue.first();
       if (!item) break;
-      const sent = token;
       const body = new FormData();
       body.set('meta', JSON.stringify(item.meta));
       body.set('video', item.blob, item.blob.type.includes('webm') ? 'clip.webm' : 'clip.mp4');
@@ -271,14 +271,14 @@ async function upload() {
       const timeout = setTimeout(() => abort.abort(), 70_000);
       let response;
       try {
-        response = await fetch('/', { method: 'POST', headers: { Authorization: `Bearer ${sent}` }, body, signal: abort.signal, credentials: 'omit' });
+        response = await fetch('/', { method: 'POST', body, signal: abort.signal, credentials: 'same-origin', redirect: 'manual' });
       } finally { clearTimeout(timeout); }
+      if (sessionExpired(response)) { signIn(); break; }
       if (!response.ok) {
         const disposition = uploadDisposition(response.status);
-        if (disposition === 'auth' && sent !== token) continue;
-        if (disposition === 'auth' || disposition === 'blocked') {
-          // A rejected clip stays in the local buffer; reloading or a new link retries it.
-          blocked = disposition === 'auth' ? 'auth' : 'clip';
+        if (disposition === 'blocked') {
+          // A rejected clip stays in the local buffer; reloading retries it.
+          blocked = 'clip';
           pause('capture_interrupted');
           break;
         }
@@ -306,11 +306,12 @@ async function upload() {
 // The latest MiniCPM observation is polled separately from uploads, so it keeps updating while paused.
 async function pollObservation() {
   clearTimeout(observationTimer);
-  if (observing || document.hidden || !token || blocked === 'auth') return;
+  if (observing || document.hidden || blocked === 'auth') return;
   observing = true;
   try {
-    const response = await fetch('/v1/observations/latest', { cache: 'no-store', credentials: 'omit',
-      headers: { Authorization: `Bearer ${token}`, ...(observationTag ? { 'If-None-Match': observationTag } : {}) } });
+    const response = await fetch('/v1/observations/latest', { cache: 'no-store', credentials: 'same-origin', redirect: 'manual',
+      headers: { ...(observationTag ? { 'If-None-Match': observationTag } : {}) } });
+    if (sessionExpired(response)) { signIn(); return; }
     if (response.status === 200) {
       observation = await response.json();
       observationTag = response.headers.get('ETag');
@@ -341,13 +342,14 @@ document.addEventListener('visibilitychange', () => {
   void requestWakeLock();
 });
 window.addEventListener('focus', () => void requestWakeLock());
-window.addEventListener('hashchange', consumeTokenLink);
 window.addEventListener('online', () => { uploadIssue = null; render(); void upload(); });
 window.addEventListener('offline', () => { uploadIssue = 'offline'; render(); });
 window.addEventListener('pagehide', () => { pause('page_hidden'); ready = false; releaseTab?.(); });
 window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 window.addEventListener('beforeunload', event => {
-  if (pending.count || ['recording', 'acquiring'].includes(state.phase)) { event.preventDefault(); event.returnValue = ''; }
+  // The sign-in navigation already waits for the last segment to be durably queued.
+  if (signInNavigationReady) return;
+  if (session || pending.count || ['recording', 'acquiring'].includes(state.phase)) { event.preventDefault(); event.returnValue = ''; }
 });
 
 async function initialize() {

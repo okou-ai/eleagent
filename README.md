@@ -26,6 +26,14 @@ https://github.com/okou-ai/eleagent/blob/main/docs/agent-runbook.md
 
 See the [agent deployment runbook](docs/agent-runbook.md) for the full deployment procedure.
 
+## Access and first initialization
+
+Use one stable HTTPS origin for capture, account sign-in and `/mcp`; configure it with `AUTH_PUBLIC_URL` and send public ingress to the authenticated gateway, not directly to observer. During first deployment, ask the owner which email to use, then run the **local-only** `init-owner.mjs --email` command with graph-api stopped. It generates a random password and writes the initial credentials to a private mode-0600 file; no password appears in command arguments or logs. See [first-owner initialization](docs/agent-runbook.md#first-owner-initialization-choose-email-generate-password).
+
+Browser capture uses email/password and a secure HttpOnly session cookie. MCP provides six read-only graph/video tools, uses Better Auth OAuth with PKCE and `graph:read` / `media:read`, and serves protected same-origin original downloads with GET/HEAD/Range support. Public signup/setup and shared user API keys are disabled. Application grants can be revoked at `/auth/account`.
+
+Private SQLite auth state and its stable secret are persisted together; run one graph-api process per database. Internal observer/archive/GPU credentials and Neo4j authentication remain required machine-to-machine protections—never distribute them to users or remove them to bypass login. `GRAPH_API_TOKEN` is no longer used.
+
 ## Licensing
 
 Original project code is AGPL-3.0-only unless a file states otherwise. Dependencies retain their own licenses. Model weights are obtained separately and are not covered by this repository's license.

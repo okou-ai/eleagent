@@ -1,12 +1,31 @@
 import http from 'node:http';
+import { createHmac } from 'node:crypto';
+import { readFileSync, openSync, fstatSync, closeSync, constants } from 'node:fs';
 import neo4j from 'neo4j-driver';
 import { GraphStore } from './graph.mjs';
 import { createApiServer } from './server.mjs';
+import { ArchiveClient } from './archive.mjs';
+import { createAuthService } from './auth.mjs';
+import { createCaptureProxy } from './capture-proxy.mjs';
 
-const token = process.env.GRAPH_API_TOKEN;
 const auth = process.env.NEO4J_AUTH || '';
 const slash = auth.indexOf('/');
-if (slash < 1 || !token) throw new Error('NEO4J_AUTH and GRAPH_API_TOKEN are required');
+if (slash < 1) throw new Error('NEO4J_AUTH is required');
+const authPublicUrl = process.env.AUTH_PUBLIC_URL;
+if (!authPublicUrl || !process.env.AUTH_SECRET_FILE || !process.env.AUTH_DB_PATH || process.env.AUTH_DB_PATH === ':memory:') {
+  throw new Error('AUTH_PUBLIC_URL, AUTH_SECRET_FILE and AUTH_DB_PATH are required; refusing to start without OAuth');
+}
+const secretFile = openSync(process.env.AUTH_SECRET_FILE, constants.O_RDONLY | constants.O_NOFOLLOW);
+let secret;
+try {
+  const info = fstatSync(secretFile);
+  if (!info.isFile() || ![0o600, 0o400].includes(info.mode & 0o777)) throw new Error('AUTH_SECRET_FILE must be a private regular file (mode 0600 or 0400)');
+  secret = readFileSync(secretFile, 'utf8').trim();
+} finally { closeSync(secretFile); }
+const cursorKey = createHmac('sha256', secret).update('eleagent:graph-cursor:v1').digest('hex');
+const authService = await createAuthService({
+  publicUrl: authPublicUrl, databasePath: process.env.AUTH_DB_PATH, secret,
+});
 const driver = neo4j.driver(process.env.GRAPH_URL || 'bolt://graph:7687',
   neo4j.auth.basic(auth.slice(0, slash), auth.slice(slash + 1)), {
     maxConnectionPoolSize: 8,
@@ -19,7 +38,14 @@ const store = new GraphStore(driver, { timeoutMs: 5000 });
 const counts = new Map();
 const durations = new Map();
 let inShutdown = false;
-const server = createApiServer({ store, token, onRequest(route, status, seconds) {
+const archive = process.env.ARCHIVE_URL ? new ArchiveClient({
+  url: process.env.ARCHIVE_URL, token: process.env.SCENE_ARCHIVE_TOKEN,
+}) : undefined;
+const capture = process.env.OBSERVER_URL ? createCaptureProxy({
+  url: process.env.OBSERVER_URL, token: process.env.OBSERVER_INTERNAL_TOKEN,
+  caFile: process.env.OBSERVER_CA_FILE || undefined, webRoot: process.env.CAPTURE_WEB_ROOT,
+}) : undefined;
+const server = createApiServer({ store, cursorKey, archive, capture, authService, authPublicUrl, onRequest(route, status, seconds) {
   const key = `route="${route}",status="${status}"`;
   counts.set(key, (counts.get(key) || 0) + 1);
   const old = durations.get(route) || { count: 0, sum: 0 };
@@ -54,6 +80,7 @@ async function stop() {
   const force = setTimeout(() => process.exit(1), 15_000).unref();
   await Promise.all([server, metrics].map((s) => new Promise((resolve) => s.close(resolve))));
   await driver.close();
+  await authService.close();
   clearTimeout(force);
 }
 process.once('SIGTERM', stop);

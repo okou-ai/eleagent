@@ -211,7 +211,7 @@ Conversion reads the source checkpoints read-only and writes a separate `atlas-o
 
 ### Private configuration
 
-New install: generate `.env` once, without printing the credentials, then edit `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE` and `ELEAGENT_OWNER_NAME`:
+New install: generate `.env` once, without printing the credentials, then edit `SPARK1_ADDRESS`, `SPARK2_ADDRESS`, `DATA_ROOT`, `MODEL_ROOT`, `ELEAGENT_TIMEZONE`, `ELEAGENT_OWNER_NAME` and `AUTH_PUBLIC_URL` (the owner's stable public HTTPS origin):
 
 ```sh
 cp .env.example .env
@@ -221,7 +221,7 @@ from pathlib import Path
 import secrets
 path = Path('.env')
 text = path.read_text()
-for key in ('SCENE_API_TOKEN', 'SCENE_ARCHIVE_TOKEN', 'GRAPH_API_TOKEN', 'NEO4J_PASSWORD'):
+for key in ('SCENE_API_TOKEN', 'SCENE_ARCHIVE_TOKEN', 'NEO4J_PASSWORD'):
     text = text.replace(key + '=\n', key + '=' + secrets.token_hex(32) + '\n')
 path.write_text(text)
 path.chmod(0o600)
@@ -230,7 +230,30 @@ PY
 
 Migration: create `.env` from the old deployment's values instead, as described in [preserving credentials](#preserving-credentials).
 
-Transfer the identical `.env` privately to the other host. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts. `SCENE_API_TOKEN` is the browser upload token; the archive and Graph API use separate tokens.
+Transfer the identical `.env` privately to the other host. Only `DATA_ROOT` and `MODEL_ROOT` may differ between hosts. `SCENE_API_TOKEN` is now only the gateway/feeder-to-observer **internal** credential; `SCENE_ARCHIVE_TOKEN`, GPU manager keys and the Neo4j password remain private machine credentials. Never distribute them in links, QR codes or browser storage. Users sign in with email/password; MCP clients authorize with OAuth. `GRAPH_API_TOKEN` is no longer used; remove it when migrating (retain the old private configuration only for rollback). Existing graph pagination cursors expire during this upgrade; restart the query, not the database.
+
+On Spark 1, create the private persistent auth directory as the host user matching container UID 1000:
+
+```sh
+set -a; . ./.env; set +a
+install -d -m 700 "$DATA_ROOT/auth"
+python3 - <<'PY'
+import os, secrets
+from pathlib import Path
+path = Path(os.environ['DATA_ROOT']) / 'auth' / 'secret'
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    pass  # Preserve an existing stable secret on upgrades.
+else:
+    with os.fdopen(fd, 'w') as f:
+        f.write(secrets.token_urlsafe(48))
+PY
+```
+
+Back up this entire directory consistently, including `auth.sqlite`, its SQLite WAL state and `secret`. Do not delete it, regenerate the secret, or overwrite owner credentials on redeploy. Run exactly one graph-api process/instance per auth database; issuance and revocation use a process-local queue. Changing `AUTH_PUBLIC_URL` changes the issuer/resource, so MCP clients must authorize again. Never derive the issuer from incoming Host/forwarding headers.
+
+`OBSERVER_URL` defaults to the private HTTP observer (`http://127.0.0.1:8080`). If an existing observer uses HTTPS, preserve it and set `OBSERVER_URL`, `OBSERVER_CA_HOST_FILE` (trusted host certificate path), and `OBSERVER_CA_FILE=/run/tls/observer.crt`. Certificate and hostname verification remain enabled. Public ingress must point to the authenticated graph gateway, never directly to observer/archive/GPU endpoints.
 
 ### Images
 
@@ -317,8 +340,9 @@ The new production `.env` must reuse the old deployment's values. Do not generat
 
 | Variable | Why it must be preserved |
 | --- | --- |
-| `SCENE_API_TOKEN` | Phones, bookmarks and QR codes already carry it |
-| `SCENE_ARCHIVE_TOKEN`, `GRAPH_API_TOKEN` | Existing internal clients and graph readers use them |
+| `SCENE_API_TOKEN` | Internal gateway/feeder-to-observer authentication only; phones no longer carry it |
+| `SCENE_ARCHIVE_TOKEN` | Existing private archive clients use it |
+| `AUTH_PUBLIC_URL`, `DATA_ROOT/auth` | Preserve the issuer/resource identity, owner account, sessions, OAuth grants and stable secret |
 | `NEO4J_PASSWORD` | An existing database keeps its stored password; the container variable only sets the password of a new database |
 | `ELEAGENT_TIMEZONE` | Diary days, sleep dates and the night window are computed in it |
 | `ELEAGENT_OWNER_NAME` | Keeps the Sleep agent's owner identity unchanged |
@@ -373,7 +397,30 @@ docker compose --env-file .env -f compose.spark2.yaml up -d --no-build
 docker compose --env-file .env -f compose.spark1.yaml up -d --no-build graph minicpm observer graph-api
 ```
 
-Wait for readiness: Neo4j healthy, MiniCPM `http://127.0.0.1:22400/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `python3 ../../runtime/gpu-manager/ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm that `GET http://127.0.0.1:8080/` returns the page and that an unauthenticated `POST /` returns `401`.
+Wait for readiness: Neo4j healthy, MiniCPM `http://127.0.0.1:22400/health` reporting `model_loaded: true`, recognition and speech readiness markers written, and `python3 ../../runtime/gpu-manager/ready.py --config /etc/eleagent/gpu-manager.json` exiting 0 on both hosts as UID 1000. Model loading can take several minutes. Confirm the observer's private `GET http://127.0.0.1:8080/` returns the page and anonymous upload remains rejected. At the gateway, unauthenticated `GET http://127.0.0.1:22403/` must redirect to sign-in; unauthenticated MCP/graph/media calls return 401. Complete the first-owner initialization below before handing the public address to the owner.
+
+### First-owner initialization (choose email, generate password)
+
+Ask the owner which email account to use **before the first initialization**; do not hard-code a team or example email. Public signup and public `/auth/setup` are disabled. Provision the account only through the local CLI. There is no user-facing API key or setup token.
+
+With the runtime image built, run on Spark 1 from `deploy/dual-spark` (include the same private Compose overrides used for production):
+
+```sh
+read -r -p 'Owner email: ' OWNER_EMAIL
+docker compose --env-file .env -f compose.spark1.yaml stop graph-api
+init_status=0
+docker compose --env-file .env -f compose.spark1.yaml run --rm --no-deps -T \
+  --entrypoint node graph-api init-owner.mjs --email "$OWNER_EMAIL" || init_status=$?
+docker compose --env-file .env -f compose.spark1.yaml up -d --no-deps --no-build graph-api
+unset OWNER_EMAIL
+test "$init_status" -eq 0
+```
+
+The stopped graph-api ensures exactly one process writes its auth database. The CLI generates a 256-bit random password and durably stores `email`, `password` and `signinURL` in `${DATA_ROOT}/auth/initial-owner.txt` (container `/data/auth/initial-owner.txt`), owner-only mode 0600, **before** creating the owner. It prints only the filepath, never the password. Give the owner this file through a verified owner-only channel, or let them read it in a private terminal; never paste the password in chat, logs, command arguments, URLs, QR codes, Git or public artifacts. Existing owner/credentials cause a refusal, never a password reset. If initialization fails after persistence, keep the recovery file/latch and investigate; never delete auth state to rerun blindly.
+
+The owner opens `${AUTH_PUBLIC_URL}/auth/sign-in` and uses that email/password. After signing in, open `/auth/account` → **Change password**, enter the initial/current password and the new password twice (12–128 characters). The current session remains signed in and other browser sessions are revoked; the initial credentials file is not updated with the new password. Capture uses the secure HttpOnly session cookie; MCP clients use `${AUTH_PUBLIC_URL}/mcp` with Authorization Code + S256 PKCE, discovery and scoped OAuth tokens (`graph:read`, `media:read`). Resource endpoints do not accept browser cookies or old shared keys. Revoke connected applications at `/auth/account`; revocation also invalidates outstanding authorization codes and access/refresh credentials. Provider upgrades require rerunning the pinned-schema revocation regression tests.
+
+CIMD clients may serve their metadata and product homepage (`client_uri`) on different public origins, such as API and app subdomains. Eleagent permits this display-only field to be cross-origin while retaining same-origin binding for `post_logout_redirect_uris`. The official pinned HTTPS metadata-fetch transport, client-ID/document identity checks, public HTTP(S) homepage URL validation, explicit owner consent, S256 PKCE and exact registered OAuth redirect matching remain enforced. This policy does not add a trusted origin or authorize a callback based on the homepage URL.
 
 On the Migration path, also confirm that the data was carried over before starting `sleep`:
 
@@ -383,7 +430,7 @@ On the Migration path, also confirm that the data was carried over before starti
 | Worker progress | Every observer, recognition, speech and OCR cursor equals the archive head; pending queues are empty or match the old values |
 | No reprocessing | Worker event counts do not jump after startup |
 | Identity data | Entity, sample and voice-identity counts equal the old deployment's |
-| Graph | `GET http://127.0.0.1:22403/v1/graph/entities` with the preserved `GRAPH_API_TOKEN` returns the old data |
+| Graph | An OAuth client authorized for `graph:read` reads the migrated entities; shared static keys and browser cookies are not MCP/graph access tokens |
 | Sleep state | `scheduler.json` shows the last day the old deployment slept |
 
 Then, with both managers `idle`, start the scheduler on Spark 1:
@@ -394,12 +441,12 @@ docker compose --env-file .env -f compose.spark1.yaml up -d --no-build sleep
 
 Its first run is the next local night between 00:30 and 05:00 in `ELEAGENT_TIMEZONE`. Do not trigger a manual night run or change the timezone to force one.
 
-Keep internal listeners private. Only the HTTPS reverse proxy is reachable by capture clients:
+Keep internal listeners private. Only the HTTPS reverse proxy to the authenticated graph gateway is reachable by capture clients:
 
 | Listener | Bind |
 | --- | --- |
-| Web capture | Spark 1 loopback `8080`, behind HTTPS |
-| Graph API | Spark 1 loopback `22403` |
+| Internal observer | Spark 1 loopback `8080` (or the preserved private HTTPS listener), never a direct public tunnel |
+| Authenticated capture / graph / MCP gateway | Spark 1 loopback `22403`, public only through the configured HTTPS origin |
 | MiniCPM worker / backend | Spark 1 loopback `22400` / `22500` |
 | Neo4j Bolt | Spark 1 private address `7687`; HTTP console disabled |
 | Archive | Spark 2 private address `22401` |
@@ -425,17 +472,17 @@ After the new stack is running, ask the owner before this step. Then:
 
 **Where:** Spark 1 and the owner's phone. **Repeatable:** yes.
 
-1. Phones allow camera and microphone access only over HTTPS. Terminate TLS in front of `127.0.0.1:8080` and forward every path, including `POST /`. For example, with Caddy and a domain the owner controls:
+1. Phones allow camera and microphone access only over HTTPS. Terminate TLS in front of the authenticated gateway `127.0.0.1:22403` and forward **every path**, including `/auth/*`, `/api/auth/*`, `/.well-known/*`, `/mcp`, `/assets/*` and `POST /`. For example, with Caddy and a domain the owner controls:
 
    ```caddyfile
    capture.example.com {
-       reverse_proxy 127.0.0.1:8080
+       reverse_proxy 127.0.0.1:22403
    }
    ```
 
    A private VPN with a certificate the phone trusts also works. Never disable certificate validation. Confirm `GET /` over HTTPS from outside the private network.
-2. Give the owner a private link `https://<capture-host>/#token=<URL-encoded SCENE_API_TOKEN>`, or a QR code of it. The page reads the token from the fragment, removes it from the address bar and keeps it on that device; fragments are not sent to the server, and the page never displays the token. Opening a new link replaces it. Share it only through a private channel, and store any QR image with restricted visibility.
+2. Give the owner the plain `https://<capture-host>/` URL (a QR may contain only that ordinary URL, no credentials). Anonymous visits redirect to email/password sign-in; sign-in returns to capture. Do not distribute service keys or create token fragments. After verifying the unified origin, retire old public tunnels that directly expose observer. Keep the internal observer/archive/GPU listeners private; do not deploy an authentication-removal branch.
 3. The page starts recording as soon as it opens. The owner allows the camera, microphone and location, keeps the page in the foreground, and speaks normally for 10–15 seconds. The page has two controls: record/pause, and switching between the back and front cameras. Switching apps or locking the phone pauses recording, and returning to the page resumes it. Clips wait in the browser's bounded queue until the server confirms archival, so browser data must not be cleared while uploads are pending.
 4. Confirm on the servers: new clips archived, MiniCPM, recognition, OCR and speech events for them, a non-empty transcript, and queues draining. Short queues after a burst of buffered uploads are normal; a growing backlog is not.
 
-**On failure:** check upload responses first. `401` means a wrong token; a conflict means a capture identity was reused for different bytes. Then check that each service is running and its queue is moving.
+**On failure:** check upload responses first. a gateway `401` means the session expired—sign in again without clearing pending clips; an internal backend authentication failure is a server configuration issue, not a reason to ask the user for a token; a conflict means a capture identity was reused for different bytes. Then check that each service is running and its queue is moving.
