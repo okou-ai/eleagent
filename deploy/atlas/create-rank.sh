@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Create one rank of the Atlas SparkGLM image without starting it. Start rank 1 (the
+# worker) first, then rank 0 (the leader, which serves the OpenAI API on
+# 127.0.0.1:8893). Container flags, mounts and environment match the LLooM
+# recipe linux-nvidia-dgx-spark-2x-glm53-atlas; this script only creates the
+# prepared container and never starts, builds, downloads or converts anything.
+set -euo pipefail
+usage() {
+  cat >&2 <<'EOF'
+usage: create-rank.sh --rank 0|1 --leader-address IP --model-root DIR --image TAG
+                     [--fabric-interface IFACE] [--fabric-hca DEVICE[,DEVICE...]]
+                     [--profile 4x512k|8x128k|FILE] [--gpu-memory-utilization 0.80-0.95]
+                     [--prefix-cache-dir DIR [--prefix-cache-gb 16-100]]
+                     [--display-carveout] [--kv-shard] [--no-fabric-siblings] [--cuda-cache DIR] [--name NAME]
+
+  --leader-address   rank 0's IPv4 address on the direct Spark-to-Spark fabric
+  --model-root       directory holding nvidia--GLM-5.3-Flash-NVFP4,
+                     incoai--GLM-5.3-Flash-DFlash2 and atlas-overlay (convert.sh)
+  --image            the image tag, install/build.sh --tag
+  --fabric-interface the fabric's network interface on THIS node (default: the
+                     interface of the first --fabric-hca; otherwise required)
+  --no-fabric-siblings  compatibility option; explicit HCA lists are always
+                     passed without adding another device
+  --profile          a profile shipped in the image (default 4x512k) or a JSON
+                     file of your own; use the same one on both ranks
+  --gpu-memory-utilization  share of unified memory for the engine (default:
+                     the profile's 0.88); raise it on dedicated hosts for a
+                     larger KV pool and prefix cache
+  --prefix-cache-dir keep evicted prefix-cache entries in this directory on
+                     the node's own disk (ext4/xfs) instead of dropping them
+                     (default: off)
+  --prefix-cache-gb  their disk budget in GiB (default 48); the same on both ranks
+  --display-carveout lend the GB10's 2 GiB display carveout to the KV cache
+                     (2 GiB more KV cache); use it on both ranks (default: off)
+  --kv-shard         split the KV cache between the two Sparks, about 1.8x the
+                     pool for the same memory; use it on both ranks (default: off)
+  --cuda-cache       persistent CUDA JIT cache (default: ~/.cache/atlas-cuda)
+EOF
+  exit 2
+}
+rank="" leader="" iface="" model_root="" image="" hca=""
+cache="$HOME/.cache/atlas-cuda" name="" profile=4x512k util="" pc_dir="" pc_gb="" carveout="" siblings=0 kvshard=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rank) rank=$2; shift 2 ;;
+    --leader-address) leader=$2; shift 2 ;;
+    --fabric-interface) iface=$2; shift 2 ;;
+    --fabric-hca) hca=$2; shift 2 ;;
+    --model-root) model_root=$2; shift 2 ;;
+    --image) image=$2; shift 2 ;;
+    --cuda-cache) cache=$2; shift 2 ;;
+    --name) name=$2; shift 2 ;;
+    --profile) profile=$2; shift 2 ;;
+    --gpu-memory-utilization) util=$2; shift 2 ;;
+    --prefix-cache-dir) pc_dir=$2; shift 2 ;;
+    --prefix-cache-gb) pc_gb=$2; shift 2 ;;
+    --display-carveout) carveout=1; shift ;;
+    --kv-shard) kvshard=1; shift ;;
+    --no-fabric-siblings) siblings=0; shift ;;
+    *) usage ;;
+  esac
+done
+[[ $rank == 0 || $rank == 1 ]] && [[ -n $leader && -n $model_root && -n $image ]] || usage
+sysfs=${FABRIC_SYSFS:-/sys/class/infiniband}
+if [[ -z $hca ]]; then
+  [[ -n $iface ]] || { echo "pass --fabric-hca or --fabric-interface; no port is assumed" >&2; exit 2; }
+  matches=()
+  for dev in "$sysfs"/*; do
+    [[ -e $dev/device/net/$iface ]] && matches+=("${dev##*/}")
+  done
+  [[ ${#matches[@]} == 1 ]] || { echo "ambiguous or missing RDMA device for $iface; pass --fabric-hca" >&2; exit 2; }
+  hca=${matches[0]}
+fi
+[[ $hca =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*(,[a-zA-Z0-9_][a-zA-Z0-9_.-]*)*$ ]] ||
+  { echo "invalid --fabric-hca device list" >&2; exit 2; }
+if [[ -z $iface ]]; then
+  primary=${hca%%,*}
+  matches=("$sysfs/$primary"/device/net/*)
+  [[ ${#matches[@]} == 1 && -e ${matches[0]} ]] ||
+    { echo "ambiguous or missing network interface for $primary; pass --fabric-interface" >&2; exit 2; }
+  iface=${matches[0]##*/}
+fi
+[[ $iface =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ && -e $sysfs/${hca%%,*}/device/net/$iface ]] ||
+  { echo "--fabric-interface must belong to the first --fabric-hca device" >&2; exit 2; }
+IFS=',' read -r -a rails <<< "$hca"
+seen=,
+for rail in "${rails[@]}"; do
+  [[ $seen != *,"$rail",* ]] || { echo "duplicate RDMA device $rail" >&2; exit 2; }
+  seen+="$rail,"
+  grep -qs ACTIVE "$sysfs/$rail/ports/1/state" ||
+    { echo "RDMA device $rail is missing or down" >&2; exit 2; }
+done
+model_root=$(realpath "$model_root")
+overlay="$model_root/atlas-overlay"
+checkpoint="$model_root/nvidia--GLM-5.3-Flash-NVFP4"
+drafter="$model_root/incoai--GLM-5.3-Flash-DFlash2"
+for path in "$checkpoint/config.json" "$drafter/config.json" "$overlay/sparkglm-verified.json"; do
+  [[ -f $path ]] || { echo "missing $path" >&2; exit 2; }
+done
+mkdir -p "$cache"
+profile_mount=()
+if [[ $profile == */* || $profile == *.json ]] && [[ ! -f $profile ]]; then
+  echo "missing profile file $profile" >&2; exit 2
+fi
+if [[ -f $profile ]]; then
+  profile_mount=(--mount "type=bind,src=$(realpath "$profile"),dst=/opt/atlas/profiles/custom.json,readonly")
+  profile=custom
+fi
+if [[ -n $pc_dir || -n $pc_gb ]]; then
+  pc_gb=${pc_gb:-48}
+  [[ $pc_dir == /* && $pc_dir != *,* ]] || { echo "--prefix-cache-dir must be set to an absolute path without commas" >&2; exit 2; }
+  [[ $pc_gb =~ ^[1-9][0-9]{1,2}$ ]] && (( pc_gb >= 16 && pc_gb <= 100 )) ||
+    { echo "--prefix-cache-gb must be a whole number from 16 to 100" >&2; exit 2; }
+fi
+name=${name:-eleagent-glm-rank$rank}
+# The engine unlinks its cache files while they are open and sweeps any a crash
+# left behind, so nothing carries over a restart.
+pc_args=()
+if [[ -n $pc_dir ]]; then
+  mkdir -p "$pc_dir/kv" "$pc_dir/ssm"
+  pc_dir=$(realpath "$pc_dir")
+  case $(stat -f -c %T "$pc_dir" 2>/dev/null) in
+    tmpfs | ramfs | overlayfs) echo "--prefix-cache-dir $pc_dir is not on a disk" >&2; exit 2 ;;
+  esac
+  free_kb=$(df -Pk "$pc_dir" | awk 'NR == 2 {print $4}')
+  (( free_kb >= pc_gb * 1048576 )) ||
+    { echo "--prefix-cache-dir $pc_dir has $((free_kb / 1048576)) GiB free; --prefix-cache-gb needs $pc_gb" >&2; exit 2; }
+  pc_args=(--mount "type=bind,src=$pc_dir,dst=/prefix-cache" -e SPARKGLM_PREFIX_CACHE_GB="$pc_gb")
+fi
+# One process per host may hold the carveout; every container shares this
+# host directory's lock file, which the server holds while it runs.
+carveout_args=()
+if [[ -n $carveout ]]; then
+  lock_dir=/run/lock/sparkglm
+  mkdir -p "$lock_dir" && chmod 1777 "$lock_dir" 2>/dev/null || true
+  carveout_args=(--mount "type=bind,src=$lock_dir,dst=$lock_dir"
+    -e SPARKGLM_DISPLAY_CARVEOUT=1)
+fi
+# The overlay links into the original checkpoint, so it is mounted at the same
+# absolute path inside the container.
+if docker container inspect "$name" >/dev/null 2>&1; then
+  echo "production Atlas container already exists: $name" >&2; exit 2
+fi
+docker create --name "$name" --restart no --network host --ipc host \
+  --label org.eleagent.gpu=sleep-glm \
+  --shm-size 32g --memory 114g --gpus all --device /dev/infiniband:/dev/infiniband \
+  --cap-add IPC_LOCK --cap-add SYS_NICE --ulimit memlock=-1:-1 \
+  --security-opt no-new-privileges=true --stop-timeout 60 \
+  --mount "type=bind,src=$checkpoint,dst=$checkpoint,readonly" \
+  --mount "type=bind,src=$overlay,dst=$overlay,readonly" \
+  --mount "type=bind,src=$drafter,dst=$drafter,readonly" \
+  --mount "type=bind,src=$cache,dst=/atlas-cuda-cache" ${profile_mount[@]+"${profile_mount[@]}"} ${pc_args[@]+"${pc_args[@]}"} \
+  ${carveout_args[@]+"${carveout_args[@]}"} \
+  -e NODE_RANK="$rank" -e MASTER_ADDR="$leader" -e MASTER_PORT=29510 \
+  -e FABRIC_INTERFACE="$iface" -e FABRIC_HCA="$hca" -e FABRIC_SIBLINGS="$siblings" -e SPARKGLM_KV_SHARD="$kvshard" \
+  -e MODEL_PATH="$overlay" -e DRAFTER_PATH="$drafter" \
+  -e SERVED_MODEL_NAME=glm-5.3-flash-atlas -e SPARKGLM_PROFILE="$profile" \
+  ${util:+-e SPARKGLM_GPU_MEMORY_UTILIZATION="$util"} \
+  -e ATLAS_WORLD_SIZE=2 -e ATLAS_TP_SIZE=2 -e ATLAS_EP_SIZE=2 -e ATLAS_CONTEXT_WINDOW=1048576 \
+  -e NCCL_SOCKET_IFNAME="$iface" -e GLOO_SOCKET_IFNAME="$iface" -e NCCL_IB_HCA="$hca" \
+  -e NCCL_IB_ADDR_FAMILY=AF_INET -e NCCL_IB_ROCE_VERSION_NUM=2 -e NCCL_CROSS_NIC=0 \
+  -e NCCL_NET=IB -e NCCL_IB_DISABLE=0 -e NCCL_IB_RETRY_CNT=7 -e NCCL_IB_TIMEOUT=22 \
+  -e NCCL_ALGO=Ring -e NCCL_PROTO=Simple -e NCCL_BUFFSIZE=33554432 -e NCCL_CUMEM_ENABLE=0 \
+  -e NCCL_NVLS_ENABLE=0 -e NCCL_MAX_NCHANNELS=2 -e NCCL_MIN_NCHANNELS=1 \
+  -e NCCL_DMABUF_ENABLE=0 -e NCCL_DEBUG=WARN -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+  -e CUDA_CACHE_PATH=/atlas-cuda-cache -e CUDA_CACHE_MAXSIZE=4294967296 \
+  "$image"
+echo "created $name (rank $rank); start the bound container ID after guards are ready"

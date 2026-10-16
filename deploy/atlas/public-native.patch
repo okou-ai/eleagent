@@ -1,0 +1,71 @@
+--- a/install/Dockerfile
++++ b/install/Dockerfile
+@@ -1,21 +1,36 @@
+ # SPDX-License-Identifier: AGPL-3.0-only
+ # Context: build.sh's pinned Enntity/atlas engine checkout and packaged install assets.
++FROM ghcr.io/enntity/atlas-sparkglm@sha256:216b2ba32de0348e227acaba31ec1e534342d6056876d97b98495c3d310c59cc AS published-native
++
+ FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS native
+ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+     git ca-certificates build-essential python3 && rm -rf /var/lib/apt/lists/*
+-RUN git clone https://github.com/flashinfer-ai/flashinfer.git /opt/flashinfer && \
+-    git -C /opt/flashinfer checkout --detach 8eccd0c1352165302840c0e19066bc42d36dbd7a
+-COPY engine/scripts/dev/glm_sparse_native /engine/scripts/dev/glm_sparse_native
+-COPY engine/research/flash-kda-prefill /engine/research/flash-kda-prefill
+-COPY install/build-native.sh /product/install/build-native.sh
+-COPY install/flash_kda/ /product/install/flash_kda/
++# Reuse only native artifacts from the public ARM64 release manifest:
++# ghcr.io/enntity/atlas-sparkglm@sha256:216b2ba32de0348e227acaba31ec1e534342d6056876d97b98495c3d310c59cc
++# Native build inputs and both Rust ABI callers are identical to engine 16315004.
++# No old server executable, profiles or source-manifest enter this build.
++COPY --from=published-native /opt/atlas/native/ /opt/atlas/native/
++COPY --from=published-native /opt/atlas/notices/ /opt/atlas/native/notices/
++COPY --from=published-native /opt/atlas/notices/FlashKDA-CUTLASS-LICENSE.txt /tmp/FlashKDA-atlas/cutlass/LICENSE.txt
+ COPY install/converter/ /product/install/converter/
++COPY --from=published-native /opt/atlas/converter/libatlas_mtp_quantize.so /product/install/converter/libatlas_mtp_quantize.so
+ ENV NVCC_THREADS=2
+-RUN bash /product/install/build-native.sh /engine /opt/flashinfer /product /opt/atlas/native
++RUN printf '%s\n' \
++    '9f7e74cf2fd98ff5e3b2aed959baa3983dfe20a7e13f00236fba6d5fa8dadd3b  /opt/atlas/native/libatlas_glm53_flash_kda.so' \
++    'fa15f67d50523f5e98ad03c8c3ebe931c0e30660be3df7bd92a776d4ca91d5e3  /opt/atlas/native/libatlas_glm_sparse_native.so' \
++    'e88256c7ef12f2f03b3e4a2c1d886e191fbae2c50d4823cc0dd2112f300c4f5a  /opt/atlas/native/libatlas_mango_flash.so' \
++    '48e6d457f3fa8c463e776bde52771f234c3b36f01ca64bdd5cd44c79fad4a791  /product/install/converter/libatlas_mtp_quantize.so' \
++    'd0978322b8ecf1a7a7e772460e0f05861f178a1f7a94356d299bebb445572483  /opt/atlas/native/native-libraries.sha256' \
++    | sha256sum -c - && \
++    cd /opt/atlas/native && sha256sum -c native-libraries.sha256 && \
++    for library in /opt/atlas/native/*.so /product/install/converter/libatlas_mtp_quantize.so; do \
++      readelf -h "$library" | grep -q 'Machine:.*AArch64' || exit 1; \
++    done && \
++    if readelf -d /opt/atlas/native/libatlas_glm_sparse_native.so | grep -Eiq 'NEEDED.*(tvm|torch|python)'; then \
++      echo 'Unexpected framework dependency in native sparse library' >&2; exit 1; \
++    fi
+ WORKDIR /product/install/converter
+-RUN nvcc -O3 -arch=sm_121f --fmad=false --expt-relaxed-constexpr -DTQ_PLUS_SIGNS \
+-    -shared -Xcompiler=-fPIC wrapper.cu -o libatlas_mtp_quantize.so && \
+-    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s . -v
++RUN PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s . -v
+ 
+ FROM native AS builder
+ RUN apt-get update -qq && apt-get install -y -qq --allow-change-held-packages \
+@@ -26,8 +41,11 @@
+ ENV PATH="/root/.cargo/bin:${PATH}"
+ ENV RUSTUP_TOOLCHAIN=1.93.1 CUDA_HOME=/usr/local/cuda CUTLASS_HOME=/opt/cutlass
+ ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+-RUN git clone https://github.com/NVIDIA/cutlass.git /opt/cutlass && \
+-    git -C /opt/cutlass checkout cf064d2e6bad2886238ac565b3b49007764f4939
++RUN git init -q /opt/cutlass && \
++    git -C /opt/cutlass remote add origin https://github.com/NVIDIA/cutlass.git && \
++    git -C /opt/cutlass fetch --depth 1 origin cf064d2e6bad2886238ac565b3b49007764f4939 && \
++    git -C /opt/cutlass -c advice.detachedHead=false checkout --detach FETCH_HEAD && \
++    test "$(git -C /opt/cutlass rev-parse HEAD)" = cf064d2e6bad2886238ac565b3b49007764f4939
+ WORKDIR /build
+ COPY engine/Cargo.toml engine/Cargo.lock engine/rust-toolchain.toml engine/README.md ./
+ COPY engine/crates/ crates/
+@@ -187,6 +205,7 @@
+ COPY --from=builder /build/dist/notices-rust/ /opt/atlas/notices/rust/
+ COPY --from=native /tmp/FlashKDA-atlas/cutlass/LICENSE.txt /opt/atlas/notices/FlashKDA-CUTLASS-LICENSE.txt
+ COPY --from=native /product/install/converter/ /opt/atlas/converter/
++RUN chmod -R a+rX /opt/atlas/converter
+ COPY install/serve.py /opt/atlas/
+ COPY install/profiles/ /opt/atlas/profiles/
+ COPY install/atlas-source.json /opt/atlas/source-manifest.json

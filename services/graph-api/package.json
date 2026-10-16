@@ -1,0 +1,13 @@
+{
+  "name": "@eleagent/graph-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node main.mjs",
+    "test": "node --test integration.test.mjs"
+  },
+  "dependencies": {
+    "neo4j-driver": "6.2.0"
+  },
+  "license": "AGPL-3.0-only"
+}

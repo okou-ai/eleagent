@@ -1,0 +1,22 @@
+[Unit]
+Description=Eleagent GPU handoff manager
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eleagent
+Group=eleagent
+SupplementaryGroups=docker
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/eleagent/runtime/gpu-manager/gpu-manager.py --config /etc/eleagent/gpu-manager.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

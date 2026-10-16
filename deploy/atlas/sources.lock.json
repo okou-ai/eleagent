@@ -1,0 +1,20 @@
+{
+  "sparkglm": {
+    "repository": "https://github.com/Enntity/sparkglm.git",
+    "commit": "473ebe765384b426948b24088e14a39ad79a4cf0",
+    "tree": "fafc9bf53611df680b9821e8684db3021ff1b19f",
+    "install_tree": "f0f8a55c3da279a65316c90f221e1fc4249dda53",
+    "license": "AGPL-3.0-only"
+  },
+  "engine": {
+    "repository": "https://github.com/Enntity/atlas.git",
+    "commit": "1631500464fb3bf1d12a720f0907729e3f83edff",
+    "tree": "e356f19963df45dc17c34743f0cb0613dfc72563",
+    "license": "AGPL-3.0-only"
+  },
+  "native_artifacts": {
+    "image": "ghcr.io/enntity/atlas-sparkglm@sha256:216b2ba32de0348e227acaba31ec1e534342d6056876d97b98495c3d310c59cc",
+    "architecture": "arm64",
+    "note": "Reuse only native libraries, converter library, and their license notices. Build the server from the pinned engine commit."
+  }
+}

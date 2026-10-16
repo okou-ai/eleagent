@@ -1,0 +1,147 @@
+{
+  "schema": "eleagent.models/v1",
+  "notice": "Weights are not distributed with Eleagent. Code and model licenses are separate. Review each model license before download or use.",
+  "profiles": {
+    "atlas-dflash-research": {
+      "optional": true,
+      "restricted": true,
+      "commercial_use": false,
+      "required_models": [
+        "glm-5.3-flash-nvfp4",
+        "glm-dflash2"
+      ]
+    }
+  },
+  "models": [
+    {
+      "id": "minicpm-o-4_5",
+      "repository": "https://huggingface.co/openbmb/MiniCPM-o-4_5",
+      "provider": "huggingface",
+      "repo_id": "openbmb/MiniCPM-o-4_5",
+      "revision": "503e754207c94da6bb26850b4469f367c9ea3582",
+      "directory": "MiniCPM-o-4_5",
+      "license": "Apache-2.0",
+      "role": "daytime perception",
+      "pin_evidence": "deployed snapshot verification manifest"
+    },
+    {
+      "id": "glm-5.3-flash-nvfp4",
+      "repository": "https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4",
+      "provider": "huggingface",
+      "repo_id": "nvidia/GLM-5.3-Flash-NVFP4",
+      "revision": "da920bb0b9f4a06727223a349e55468e38352348",
+      "directory": "glm-5.3-flash-atlas/nvidia--GLM-5.3-Flash-NVFP4",
+      "license": "MIT",
+      "role": "nighttime reasoning",
+      "profile": "atlas-dflash-research",
+      "optional": true,
+      "pin_evidence": "deployed snapshot download manifest"
+    },
+    {
+      "id": "glm-dflash2",
+      "repository": "https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2",
+      "provider": "huggingface",
+      "repo_id": "incoai/GLM-5.3-Flash-DFlash2",
+      "revision": "bf582e4eacc1810f76656d1811693ff6c6737d2a",
+      "directory": "glm-5.3-flash-atlas/incoai--GLM-5.3-Flash-DFlash2",
+      "license": "CC-BY-NC-ND-4.0",
+      "role": "speculative decoding draft model",
+      "profile": "atlas-dflash-research",
+      "optional": true,
+      "restricted": true,
+      "requires_explicit_acceptance": true,
+      "commercial_use": false,
+      "pin_evidence": "public upstream metadata read on 2026-10-16; local deployment has no retained revision metadata",
+      "note": "The provided Atlas recipe requires this drafter. The whole recipe is optional research functionality; omitting the drafter does not produce a supported configuration."
+    },
+    {
+      "id": "qwen3-asr-1.7b",
+      "repository": "https://huggingface.co/Qwen/Qwen3-ASR-1.7B",
+      "provider": "huggingface",
+      "repo_id": "Qwen/Qwen3-ASR-1.7B",
+      "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+      "directory": "qwen3-asr-1.7b",
+      "license": "Apache-2.0",
+      "role": "speech transcription",
+      "pin_evidence": "public upstream provisioning pin read on 2026-10-16; local deployment has no retained revision metadata"
+    },
+    {
+      "id": "campplus",
+      "repository": "https://huggingface.co/funasr/campplus",
+      "provider": "huggingface",
+      "repo_id": "funasr/campplus",
+      "revision": "e4b6ede7ce16997aff4ae69fbca1f0175e2afede",
+      "directory": "campplus",
+      "license": "Apache-2.0",
+      "role": "speaker embeddings",
+      "pin_evidence": "public upstream provisioning pin read on 2026-10-16; local deployment has no retained revision metadata"
+    },
+    {
+      "id": "opencv-face",
+      "repository": "https://github.com/opencv/opencv_zoo",
+      "provider": "script",
+      "revision": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+      "directory": "entities",
+      "license": "See per-model upstream LICENSE files",
+      "role": "YuNet face detection and SFace embeddings",
+      "download_script": "services/recognition/download_models.py",
+      "verification": "Pinned Git LFS SHA-256 and size; individual license files downloaded beside weights"
+    },
+    {
+      "id": "yoloe-26l",
+      "repository": "https://github.com/ultralytics/assets",
+      "provider": "script",
+      "revision": "v8.4.0",
+      "directory": "entities",
+      "license": "AGPL-3.0",
+      "role": "object detection",
+      "download_script": "services/recognition/object_download_models.py",
+      "sha256": "8b0ff5ecfd5baa0ebed509efb00aacff52faae2f6770e7ffa2a223231b9653c0"
+    },
+    {
+      "id": "dinov2-small",
+      "repository": "https://huggingface.co/facebook/dinov2-small",
+      "provider": "script",
+      "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+      "directory": "entities/dinov2-small",
+      "license": "Apache-2.0",
+      "role": "object appearance embeddings",
+      "download_script": "services/recognition/object_download_models.py",
+      "sha256": "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1"
+    },
+    {
+      "id": "rapidocr",
+      "repository": "https://www.modelscope.cn/models/RapidAI/RapidOCR",
+      "provider": "script",
+      "revision": "v3.10.0",
+      "directory": "ocr",
+      "license": "Apache-2.0",
+      "role": "text detection, recognition and orientation",
+      "download_script": "services/recognition/ocr_download_models.py",
+      "verification": "Each ONNX artifact has a fixed SHA-256 in the downloader"
+    },
+    {
+      "id": "ecapa-legacy",
+      "repository": "https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb",
+      "provider": "script",
+      "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+      "directory": "voice",
+      "license": "Apache-2.0",
+      "role": "optional legacy speaker embeddings",
+      "optional": true,
+      "download_script": "services/recognition/voice_download_models.py",
+      "sha256": "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2"
+    },
+    {
+      "id": "silero-vad",
+      "repository": "https://github.com/snakers4/silero-vad",
+      "provider": "package",
+      "package": "silero-vad==6.2.1",
+      "directory": "voice",
+      "license": "MIT",
+      "role": "voice activity detection",
+      "download_script": "services/recognition/voice_download_models.py",
+      "sha256": "e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720"
+    }
+  ]
+}

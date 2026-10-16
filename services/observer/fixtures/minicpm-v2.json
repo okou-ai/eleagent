@@ -1,0 +1,4 @@
+[
+  [{"type":"response.output.delta","kind":"text","text":"VISUAL: A synthetic blue square. AUDIO: A generated test tone."},
+   {"type":"response.done","response_id":"synthetic-response"}]
+]

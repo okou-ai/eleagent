@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111610">
+  <meta name="description" content="A self-hosted personal memory system. Capture a moment, keep its evidence.">
+  <title>Eleagent — Capture</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/assets/manifest.webmanifest">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="/" aria-label="Eleagent home"><img src="/assets/icon.svg" width="38" height="38" alt="">Eleagent</a><span class="local-label">YOUR MEMORY, SELF-HOSTED</span></header>
+    <section class="intro"><p class="eyebrow">NOTICE. REMEMBER. REVISIT.</p><h1>A little less forgotten.</h1><p>An elephant’s memory. An agent’s mind.</p></section>
+    <div class="workspace">
+      <section class="capture-card" aria-labelledby="capture-heading">
+        <div class="card-heading"><h2 id="capture-heading">Capture your day</h2><span id="capture-status" class="status" role="status">Ready</span></div>
+        <div class="preview"><video id="preview" autoplay playsinline muted aria-label="Live camera preview"></video><div id="preview-placeholder"><span class="preview-symbol" aria-hidden="true">◎</span><p>Your camera stays off until you start.</p></div><span id="live-badge" hidden>● RECORDING</span></div>
+        <div class="controls"><button id="start" class="primary" disabled>Start recording</button><button id="pause" disabled>Pause</button><button id="stop" disabled>Stop</button></div>
+        <p id="message" class="message" role="status" aria-live="polite">Checking browser support…</p>
+        <div class="metrics"><div><span>Screen</span><strong id="wake-status">Not requested</strong></div><div><span>Local buffer</span><strong id="queue-status">Loading…</strong></div><div><span>Last archived clip</span><strong id="last-upload">None this visit</strong></div></div>
+      </section>
+      <aside>
+        <section class="settings-card" aria-labelledby="settings-heading"><h2 id="settings-heading">Before you start</h2>
+          <label for="token">Access token</label><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Enter your service token" minlength="16"><p class="help">Kept in memory for this visit. Never saved to your browser.</p>
+          <label for="camera">Camera</label><select id="camera"><option value="back">Back camera</option><option value="front">Front camera</option></select>
+          <label class="checkbox"><input id="location" type="checkbox">Include location</label><p id="location-status" class="help">Optional. Device motion is not collected.</p>
+          <div class="divider"></div><h3>Keep this page open</h3><p class="help">Eleagent requests a screen wake lock while recording. Switching apps or locking your phone pauses capture. Return here and tap Resume to continue.</p>
+          <h3>When the connection drops</h3><p class="help">Clips wait in this browser until the archive confirms receipt. Recording pauses at 128 MiB or 240 clips. Browser storage can be cleared or evicted; it is not a backup.</p>
+          <button id="retry" class="text-button" disabled>Retry uploads</button><button id="discard" class="text-button danger" disabled>Discard pending clips</button>
+        </section>
+        <p class="privacy-note">Record only where you have permission. Camera and microphone access are requested when you start.</p>
+      </aside>
+    </div>
+    <footer><span>Eleagent</span><span>Capture → Observe → Remember</span></footer>
+  </main>
+</body>
+</html>

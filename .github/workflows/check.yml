@@ -1,0 +1,70 @@
+name: Check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check source syntax
+        run: python scripts/check-source.py
+      - name: Check browser state and memory dates
+        env:
+          ELEAGENT_TIMEZONE: America/Los_Angeles
+        run: node --test apps/web/tests/*.test.mjs services/sleep/lib/*.test.mjs
+      - name: Install observer test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install -r services/observer/requirements.txt pytest==8.4.2
+      - name: Check observer and upload protocol
+        run: python -m pytest services/observer/tests
+  recognition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r services/recognition/requirements-dev.txt
+      - name: Check recognition without model inference
+        working-directory: services/recognition
+        run: python -m pytest tests
+      - name: Check archived media formats
+        working-directory: services/archive
+        run: python -m pytest tests
+  graph:
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:2026.02.3-community
+        env:
+          NEO4J_AUTH: neo4j/isolated-ci-database-only
+        ports:
+          - 17687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p isolated-ci-database-only 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: services/graph-api
+      - run: npm test
+        working-directory: services/graph-api
+        env:
+          TEST_NEO4J_URL: bolt://127.0.0.1:17687
+          TEST_NEO4J_PASSWORD: isolated-ci-database-only

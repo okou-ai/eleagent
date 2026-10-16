@@ -1,0 +1,118 @@
+name: eleagent-spark2
+
+x-recognition-environment: &recognition-environment
+  ARCHIVE_URL: http://${SPARK2_ADDRESS:?Set the private Spark 2 address}:22401
+  SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN:?Generate the shared archive token}
+  ENTITY_WEIGHTS_DIR: /models/entities
+  ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
+  HOME: /tmp
+  METRICS_ADDR: 127.0.0.1
+
+services:
+  archive:
+    image: local/eleagent-archive:production
+    build:
+      context: ../../services/archive
+    container_name: eleagent-archive
+    network_mode: host
+    restart: unless-stopped
+    user: "10001:10001"
+    command: ["uvicorn", "app.archive_server:create_archive_app", "--factory", "--host", "${SPARK2_ADDRESS}", "--port", "22401"]
+    environment:
+      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN}
+      SCENE_ARCHIVE_ROOT: /data/archive/media
+      SCENE_ARCHIVE_DB: /data/archive/archive.sqlite3
+      SCENE_ARCHIVE_RESERVE_BYTES: ${ARCHIVE_RESERVE_BYTES:-107374182400}
+      METRICS_SERVICE: archive
+      METRICS_PORT: "9201"
+      METRICS_ADDR: 127.0.0.1
+    volumes:
+      - ${DATA_ROOT:?Set DATA_ROOT}/archive:/data/archive
+    stop_grace_period: 60s
+
+  recognition:
+    image: local/eleagent-recognition:production
+    build:
+      context: ../../services/recognition
+      target: objects
+    container_name: eleagent-recognition
+    network_mode: host
+    user: "1000:1000"
+    restart: unless-stopped
+    gpus: all
+    environment:
+      <<: *recognition-environment
+      METRICS_SERVICE: recognition
+      METRICS_PORT: "9202"
+      YOLO_CONFIG_DIR: /tmp/ultralytics
+    volumes:
+      - ${DATA_ROOT}/recognition:/data
+      - ${MODEL_ROOT:?Set MODEL_ROOT}/entities:/models/entities:ro
+    depends_on: [archive]
+    stop_grace_period: 120s
+
+  speech:
+    image: local/eleagent-speech:production
+    build:
+      context: ../../services/recognition
+      target: speech
+    container_name: eleagent-speech
+    network_mode: host
+    user: "1000:1000"
+    restart: unless-stopped
+    gpus: all
+    environment:
+      <<: *recognition-environment
+      ASR_LANGUAGE: ${ASR_LANGUAGE:-}
+      METRICS_SERVICE: speech
+      METRICS_PORT: "9203"
+    volumes:
+      - ${DATA_ROOT}/recognition:/data
+      - ${MODEL_ROOT}/entities:/models/entities:ro
+      - ${MODEL_ROOT}/campplus:/models/campplus:ro
+      - ${MODEL_ROOT}/qwen3-asr-1.7b:/models/qwen3-asr-1.7b:ro
+    depends_on: [archive]
+    stop_grace_period: 120s
+
+  text:
+    image: local/eleagent-text:production
+    build:
+      context: ../../services/recognition
+      target: ocr
+    container_name: eleagent-text
+    network_mode: host
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      <<: *recognition-environment
+      OCR_MODEL_DIR: /models/ocr
+      METRICS_SERVICE: text
+      METRICS_PORT: "9205"
+    volumes:
+      - ${DATA_ROOT}/recognition:/data
+      - ${MODEL_ROOT}/ocr:/models/ocr:ro
+    depends_on: [archive]
+
+  graph-sync:
+    image: local/eleagent-graph-sync:production
+    build:
+      context: ../..
+      dockerfile: services/graph-sync/Dockerfile
+    container_name: eleagent-graph-sync
+    network_mode: host
+    user: "1000:1000"
+    group_add: ["10001"]
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Generate the graph password}
+      GRAPH_URL: bolt://${SPARK1_ADDRESS:?Set the private Spark 1 address}:7687
+      ARCHIVE_DB: /archive/archive.sqlite3
+      ENTITY_STATE_PATH: /entities/entities.sqlite
+      ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
+      METRICS_SERVICE: graph-sync
+      METRICS_PORT: "9204"
+      METRICS_ADDR: 127.0.0.1
+    volumes:
+      - ${DATA_ROOT}/archive:/archive:ro
+      - ${DATA_ROOT}/recognition:/entities
+    depends_on: [archive, recognition]

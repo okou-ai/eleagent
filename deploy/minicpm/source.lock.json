@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/OpenBMB/MiniCPM-o-Demo.git",
+  "commit": "47709a9210dfd71afa76c058e017fc8c4db5c8d2",
+  "tree": "96fb0aae6e344f3651b66ce85a4bac85a3a7789c",
+  "application_license": "NOASSERTION",
+  "base_image": {
+    "reference": "nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04@sha256:e5a14fe36b99bb7ef417749837aa7a5150c9b5fbd07474835aa707c82fff85ba",
+    "architecture": "arm64",
+    "manifest_list_digest": "sha256:14d94b039cb94bbd5da559f303b46bc4b0d5d6c24ab1a9d7b186e566ed3400dc",
+    "python": "3.12 (Ubuntu 24.04 packages)",
+    "dependencies": "base-requirements.lock",
+    "attention": "Upstream auto selection falls back to PyTorch SDPA without flash-attn",
+    "status": "Public build candidate: registry manifests, source requirements, and ARM64 dependency resolution checked; no image build, model load, or inference acceptance performed."
+  },
+  "license_note": "No license file found in the pinned demo repository tree; review upstream terms before distributing a built image. Model weights have separate terms."
+}

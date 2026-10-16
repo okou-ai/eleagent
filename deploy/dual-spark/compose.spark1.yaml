@@ -1,0 +1,128 @@
+name: eleagent-spark1
+
+services:
+  observer:
+    image: local/eleagent-observer:production
+    build:
+      context: ../..
+      dockerfile: services/observer/Dockerfile
+    container_name: eleagent-observer
+    network_mode: host
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:create_app", "--factory", "--host", "127.0.0.1", "--port", "8080", "--workers", "1", "--no-access-log"]
+    environment:
+      SCENE_API_TOKEN: ${SCENE_API_TOKEN:?Generate the browser upload token}
+      SCENE_DB_PATH: /data/scene.sqlite3
+      GRAPH_URL: bolt://${SPARK1_ADDRESS:?Set the private Spark 1 address}:7687
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Generate the graph password}
+      SCENE_ARCHIVE_URL: http://${SPARK2_ADDRESS:?Set the private Spark 2 address}:22401
+      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN:?Generate the shared archive token}
+      MINICPM_BACKEND: windowed
+      MINICPM_URL: ws://127.0.0.1:22400/v1/worker/chat
+      SCENE_QUEUE_SIZE: "600"
+      SCENE_MAX_PACKET_AGE_SECONDS: "600"
+      SCENE_WINDOW_SECONDS: "5"
+      MINICPM_MAX_NEW_TOKENS: "64"
+      MINICPM_COMPACT_OBSERVATION: "true"
+      ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
+      METRICS_SERVICE: observer
+      METRICS_PORT: "9101"
+      METRICS_ADDR: 127.0.0.1
+    volumes:
+      - ${DATA_ROOT:?Set DATA_ROOT}/observer:/data
+    depends_on:
+      graph:
+        condition: service_healthy
+    stop_grace_period: 60s
+
+  minicpm:
+    image: ${MINICPM_IMAGE:-local/eleagent-minicpm:production}
+    container_name: eleagent-minicpm
+    network_mode: host
+    restart: unless-stopped
+    gpus: all
+    shm_size: 8gb
+    environment:
+      MODEL_PATH: /models/MiniCPM-o-4_5
+      BACKEND_PORT: "22500"
+      WORKER_HOST: 127.0.0.1
+      WORKER_PORT: "22400"
+      GPU_ID: "0"
+    volumes:
+      - ${MODEL_ROOT:?Set MODEL_ROOT}/MiniCPM-o-4_5:/models/MiniCPM-o-4_5:ro
+      - ${DATA_ROOT}/minicpm-cache:/app/torch_compile_cache
+    stop_grace_period: 60s
+
+  graph:
+    image: neo4j:2026.02.3-community
+    container_name: eleagent-graph
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?Generate the graph password}
+      NEO4J_server_default__listen__address: ${SPARK1_ADDRESS:?Set the private Spark 1 address}
+      NEO4J_server_default__advertised__address: ${SPARK1_ADDRESS}
+      NEO4J_server_http_enabled: "false"
+      NEO4J_server_https_enabled: "false"
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 4G
+      NEO4J_server_memory_pagecache_size: 2G
+    volumes:
+      - ${DATA_ROOT}/neo4j/data:/data
+      - ${DATA_ROOT}/neo4j/logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -a bolt://$${NEO4J_server_default__listen__address}:7687 -u neo4j -p \"$${NEO4J_AUTH#*/}\" 'RETURN 1' >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+    stop_grace_period: 60s
+
+  graph-api:
+    image: local/eleagent-graph-api:production
+    build:
+      context: ../../services/graph-api
+    container_name: eleagent-graph-api
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      graph:
+        condition: service_healthy
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      GRAPH_URL: bolt://${SPARK1_ADDRESS}:7687
+      GRAPH_API_TOKEN: ${GRAPH_API_TOKEN:?Generate the graph API token}
+      HOST: 127.0.0.1
+      PORT: "22403"
+      METRICS_PORT: "9208"
+      ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
+
+  sleep:
+    image: local/eleagent-sleep:production
+    build:
+      context: ../../services/sleep
+    container_name: eleagent-sleep
+    network_mode: host
+    user: "1000:1000"
+    restart: unless-stopped
+    depends_on:
+      graph:
+        condition: service_healthy
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      GRAPH_URL: bolt://${SPARK1_ADDRESS}:7687
+      ARCHIVE_URL: http://${SPARK2_ADDRESS}:22401
+      SCENE_ARCHIVE_TOKEN: ${SCENE_ARCHIVE_TOKEN}
+      GPU_MANAGER_URLS: http://${SPARK1_ADDRESS}:9210,http://${SPARK2_ADDRESS}:9210
+      GPU_MANAGER_TOKEN_FILE: /run/eleagent-gpu/token
+      LOCAL_GLM_URL: http://127.0.0.1:8893
+      ELEAGENT_TIMEZONE: ${ELEAGENT_TIMEZONE:-America/Los_Angeles}
+      ELEAGENT_OWNER_NAME: ${ELEAGENT_OWNER_NAME:-Me}
+      SLEEP_AT: "00:30"
+      SLEEP_DATA: /data
+      METRICS_PORT: "9206"
+    volumes:
+      - ${DATA_ROOT}/sleep:/data
+      - ${DATA_ROOT}/gpu-manager/control.secret:/run/eleagent-gpu/token:ro
+    stop_grace_period: 120s

@@ -1,0 +1,12 @@
+-r requirements.txt
+rapidocr==3.10.0
+onnxruntime==1.21.0
+omegaconf==2.4.0
+colorlog==6.12.0
+pyclipper==1.4.0
+shapely==2.2.0
+Pillow==10.4.0
+PyYAML==6.0.3
+requests==2.34.2
+tqdm==4.70.0
+six==1.17.0

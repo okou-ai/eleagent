@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest==8.4.2
+fastapi==0.118.0
+soundfile==0.13.1
