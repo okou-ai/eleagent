@@ -8,6 +8,9 @@ Capture audio and video in a browser, retain the original evidence, organize obs
 
 Eleagent is an experimental reference implementation. Its initial hardware profile uses two NVIDIA DGX Spark systems: daytime perception shares the GPUs with a larger model at night.
 
+> [!WARNING]
+> Eleagent is experimental. Expose only the authenticated gateway at your `AUTH_PUBLIC_URL`. Keep every other service on a trusted private network, and never publish it to the internet directly.
+
 ![Eleagent architecture: daytime parallel video perception and nighttime Pi memory consolidation, with model allocation on DGX Spark 1 and 2](docs/images/architecture.png)
 
 ## How to start
