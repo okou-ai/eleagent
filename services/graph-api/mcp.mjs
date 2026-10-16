@@ -58,7 +58,7 @@ export function createMcpHandler({ store, token, archive, allowedOrigins = proce
       if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
       return archive.listVideoClips(args, { store, signal: extra.signal });
     }],
-    ['get_video_clip', 'Get original video metadata and an authenticated same-origin download URL by media_id. Optionally scope evidence references to entity_id. Download requires the same Bearer token; video bytes are not embedded in MCP output.', {
+    ['get_video_clip', 'Get original video metadata and a public same-origin download URL by media_id. Optionally scope evidence references to entity_id. No client authentication is required; video bytes are not embedded in MCP output.', {
       media_id: mediaId, entity_id: id.optional(),
     }, async (args, extra) => {
       if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
@@ -67,7 +67,7 @@ export function createMcpHandler({ store, token, archive, allowedOrigins = proce
   ];
   function buildServer() {
     const server = new McpServer({ name: 'eleagent', version: '0.1.0' }, {
-      instructions: 'Read-only access to the Eleagent graph and original video references. Graph contents include fallible model interpretations. Original downloads require the MCP Bearer token; never put it in URLs.',
+      instructions: 'Public read-only access to the Eleagent graph and original video references. Graph contents include fallible model interpretations. MCP and original downloads do not require client authentication.',
     });
     for (const [name, description, shape, run] of [...graphTools, ...videoTools]) {
       server.registerTool(name, { description, inputSchema: z.object(shape).strict(), annotations }, async (args, extra) => {

@@ -146,9 +146,7 @@ describe('generic graph API against an isolated real Neo4j', {
   test('standard MCP client queries the real graph without mutations', async () => {
     const client = new Client({ name: 'real-neo4j-mcp-integration', version: '1.0.0' });
     try {
-      await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
-        requestInit: { headers: { Authorization: `Bearer ${token}` } },
-      }));
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`)));
       assert.equal((await client.listTools()).tools.length, 6);
       const call = async (name, args) => {
         const result = await client.callTool({ name, arguments: args });

@@ -113,7 +113,7 @@ export class ArchiveClient {
     }
   }
 
-  // The graph server authenticates the caller before invoking this method.
+  // Public graph-origin downloads still use a private archive credential upstream.
   // This method owns the response, including sanitized failures; never JSON-wrap it.
   async proxyOriginal(req, res, mediaId) {
     const sendError = (status) => {
@@ -319,7 +319,7 @@ export class ArchiveClient {
     if (['video/mp4', 'video/quicktime', 'video/webm'].includes(contentType)) metadata.content_type = contentType;
     result.metadata = metadata;
     result.original_url = `${this.publicBaseUrl}/v1/archive/media/${encodeURIComponent(raw.media_id)}/original`;
-    result.original_requires_auth = true;
+    result.original_requires_auth = false;
     result.media_refs = this.mediaRefs(raw, evidence);
     return result;
   }

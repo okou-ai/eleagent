@@ -56,13 +56,6 @@ export function createApiServer({ store, token, archive, onRequest = () => {} })
         });
         return res.end();
       }
-      const authorization = req.headers.authorization || '';
-      const normalized = authorization.replace(/^bearer /i, 'Bearer ');
-      const supplied = createHash('sha256').update(normalized).digest();
-      if (!timingSafeEqual(supplied, expectedAuth)) {
-        res.setHeader('WWW-Authenticate', 'Bearer');
-        throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
-      }
       if (url.pathname === '/mcp') {
         route = 'mcp';
         queryParams(url, []);
@@ -79,6 +72,14 @@ export function createApiServer({ store, token, archive, onRequest = () => {} })
         if (!['GET', 'HEAD'].includes(req.method)) throw new ApiError(405, 'method_not_allowed', 'Use GET or HEAD');
         if (!archive) throw new ApiError(503, 'archive_unavailable', 'Archive is not configured');
         return await archive.proxyOriginal(req, res, original[1]);
+      }
+      // MCP and original downloads are intentionally public; legacy REST remains protected.
+      const authorization = req.headers.authorization || '';
+      const normalized = authorization.replace(/^bearer /i, 'Bearer ');
+      const supplied = createHash('sha256').update(normalized).digest();
+      if (!timingSafeEqual(supplied, expectedAuth)) {
+        res.setHeader('WWW-Authenticate', 'Bearer');
+        throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
       }
       const match = /^\/v1\/graph\/entities\/([^/]+)(\/links)?$/.exec(url.pathname);
       if (url.pathname === '/v1/graph/entities') {

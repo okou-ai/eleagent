@@ -53,7 +53,7 @@ test('list maps archive filters, authentication and cursor; sanitizes payload an
   assert.deepEqual(result.items[0].metadata, { width: 1920, height: 1080, camera_facing: 'back', content_type: 'video/mp4' });
   assert.equal(result.items[0].size_bytes, 4096);
   assert.equal(result.items[0].media_refs[0].kind, 'whole_clip');
-  assert.equal(result.items[0].original_requires_auth, true);
+  assert.equal(result.items[0].original_requires_auth, false);
   sanitized(result);
 });
 

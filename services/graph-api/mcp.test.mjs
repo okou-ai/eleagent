@@ -33,7 +33,7 @@ before(async () => {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;
   client = new Client({ name: 'eleagent-mcp-test', version: '1.0.0' });
-  transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } });
+  transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`));
   await client.connect(transport);
 });
 after(async () => { await client?.close(); await new Promise((resolve) => server.close(resolve)); });
@@ -64,7 +64,7 @@ test('invalid limits, fields, seeds, and unknown tools cannot reach backend oper
   assert.equal((await call('get_subgraph', { ids: ['one', 'two'], max_entities: 1 })).isError, true);
   assert.equal((await call('execute_cypher', { query: 'RETURN 1' })).isError, true);
 });
-test('video tools provide same-origin protected original reference; invalid interval is rejected', async () => {
+test('video tools provide same-origin original reference; invalid interval is rejected', async () => {
   assert.deepEqual(json(await call('list_video_clips', { entity_id: 'episode:one' })).media, []);
   const precise = await call('list_video_clips', { started_at: '2026-10-16T12:00:00.000500Z', ended_at: '2026-10-16T12:00:00.000900Z' });
   assert.ok(!precise.isError, 'Valid submillisecond evidence must not be rounded to an empty interval');
@@ -79,14 +79,14 @@ test('tool errors do not expose driver messages', async () => {
   assert.equal(result.isError, true); assert.ok(!JSON.stringify(result).includes('secret driver'));
   assert.equal(json(await call('get_entity', { id: 'missing' })).error.code, 'not_found');
 });
-test('MCP and original download reject unauthenticated requests; Origin is fail-closed', async () => {
+test('MCP and original downloads need no authentication; Origin and legacy REST protections remain', async () => {
   const original = `/v1/archive/media/media_${'a'.repeat(32)}/original`;
-  for (const path of ['/mcp', original]) assert.equal((await fetch(origin + path)).status, 401);
-  const denied = await fetch(`${origin}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, Origin: 'https://evil.invalid', 'Content-Type': 'application/json' }, body: '{}' });
+  const denied = await fetch(`${origin}/mcp`, { method: 'POST', headers: { Origin: 'https://evil.invalid', 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(denied.status, 403);
-  assert.equal((await fetch(`${origin}/mcp`, { headers: { Authorization: `Bearer ${token}` } })).status, 405);
-  const video = await fetch(origin + original, { headers: { Authorization: `Bearer ${token}`, Range: 'bytes=0-2' } });
+  assert.equal((await fetch(`${origin}/mcp`)).status, 405);
+  const video = await fetch(origin + original, { headers: { Range: 'bytes=0-2' } });
   assert.equal(video.status, 206); assert.equal(await video.text(), 'abc');
+  assert.equal((await fetch(origin + '/v1/graph/entities')).status, 401);
 });
 test('body bounds and legacy REST graph endpoint remain intact', async () => {
   const response = await fetch(`${origin}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ padding: 'x'.repeat(33000) }) });
