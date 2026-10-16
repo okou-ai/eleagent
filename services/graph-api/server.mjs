@@ -46,7 +46,7 @@ export function createApiServer({ store, cursorKey, archive, capture, authServic
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate, DPoP-Nonce, X-Graph-Consistency, Content-Range, Accept-Ranges, ETag, X-Archive-SHA256, X-Archive-Media-ID');
+    res.setHeader('Access-Control-Expose-Headers', 'WWW-Authenticate, X-Graph-Consistency, Content-Range, Accept-Ranges, ETag, X-Archive-SHA256, X-Archive-Media-ID');
     res.setHeader('X-Graph-Consistency', 'live');
     const send = (status, body) => {
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -58,7 +58,7 @@ export function createApiServer({ store, cursorKey, archive, capture, authServic
         if (!(authService && (url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/.well-known/'))) && !url.pathname.startsWith('/v1/graph/') && url.pathname !== '/mcp' && !/^\/v1\/archive\/media\/media_[a-f0-9]{32}\/original$/.test(url.pathname)) throw new ApiError(404, 'not_found', 'Route not found');
         res.writeHead(204, {
           'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, DPoP, Range, If-Range',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id, Range, If-Range',
           'Access-Control-Max-Age': '600',
         });
         return res.end();

@@ -9,7 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { SignJWT } from 'jose';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
-import { createAuthService } from './auth.mjs';
+import { ACCESS_TOKEN_LIFETIME_SECONDS, createAuthService } from './auth.mjs';
 import { authPage, AUTH_JS } from './auth-pages.mjs';
 import { createContext, runInContext } from 'node:vm';
 
@@ -68,13 +68,13 @@ async function fixture(t) {
   async function register(overrides = {}) {
     const response = await request('/api/auth/oauth2/register', { method: 'POST', cookie: false, body: {
       client_name: 'Graph test client', redirect_uris: ['http://127.0.0.1:9812/callback'],
-      token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'], scope: 'graph:read media:read offline_access', ...overrides,
+      token_endpoint_auth_method: 'none', grant_types: ['authorization_code'],
+      response_types: ['code'], scope: 'graph:read media:read', ...overrides,
     } });
     assert.equal(response.status, 201, await response.clone().text());
     return response.json();
   }
-  function authorization(client, scopes = 'graph:read media:read offline_access', overrides = {}) {
+  function authorization(client, scopes = 'graph:read media:read', overrides = {}) {
     const verifier = randomBytes(48).toString('base64url');
     const query = new URLSearchParams({ client_id: client.client_id, redirect_uri: client.redirect_uris[0],
       response_type: 'code', scope: scopes, resource: `${origin}/mcp`, state: 'csrf-state',
@@ -199,16 +199,29 @@ test('browser submit sends return_to login without oauth_query and preserves sig
   }
 });
 
-test('official metadata, closed signup, canonical origin, private persistent WAL database and first-owner latch', async t => {
+test('minimal metadata, closed signup, canonical origin, private persistent WAL database and first-owner latch', async t => {
   const f = await fixture(t);
   const metadata = await (await f.request('/.well-known/oauth-authorization-server/api/auth')).json();
-  assert.equal(metadata.issuer, `${f.origin}/api/auth`);
-  assert.equal(metadata.client_id_metadata_document_supported, true);
-  assert.deepEqual(metadata.code_challenge_methods_supported, ['S256']);
-  assert.deepEqual(metadata.grant_types_supported, ['authorization_code', 'refresh_token']);
-  const resource = await (await f.request('/.well-known/oauth-protected-resource/mcp')).json();
-  assert.equal(resource.resource, `${f.origin}/mcp`);
-  assert.deepEqual(resource.scopes_supported, ['graph:read', 'media:read']);
+  assert.deepEqual(metadata, {
+    issuer: `${f.origin}/api/auth`,
+    authorization_endpoint: `${f.origin}/api/auth/oauth2/authorize`,
+    token_endpoint: `${f.origin}/api/auth/oauth2/token`,
+    registration_endpoint: `${f.origin}/api/auth/oauth2/register`,
+    scopes_supported: ['graph:read', 'media:read'],
+    response_types_supported: ['code'],
+    response_modes_supported: ['query'],
+    grant_types_supported: ['authorization_code'],
+    token_endpoint_auth_methods_supported: ['none'],
+    code_challenge_methods_supported: ['S256'],
+    authorization_response_iss_parameter_supported: true,
+    client_id_metadata_document_supported: true,
+  });
+  for (const path of ['/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-protected-resource']) {
+    assert.deepEqual(await (await f.request(path)).json(), {
+      resource: `${f.origin}/mcp`, authorization_servers: [`${f.origin}/api/auth`],
+      bearer_methods_supported: ['header'], scopes_supported: ['graph:read', 'media:read'],
+    });
+  }
   const signup = await f.request('/api/auth/sign-up/email', { method: 'POST', body: { name: 'attacker', email: 'attacker@example.com', password: PASSWORD } });
   assert.ok(signup.status >= 400);
   assert.deepEqual(f.service.getSetupStatus(), { configured: false, setupClaimed: false });
@@ -238,7 +251,7 @@ test('official metadata, closed signup, canonical origin, private persistent WAL
   }
 });
 
-test('HTTP login → signed consent → PKCE code → opaque resource token → refresh rotation → revocation', async t => {
+test('HTTP login → signed consent → PKCE code → long-lived opaque token without refresh → owner revocation', async t => {
   const f = await fixture(t);
   await f.owner();
   const client = await f.register();
@@ -246,7 +259,9 @@ test('HTTP login → signed consent → PKCE code → opaque resource token → 
   const response = await f.exchange(client, flow);
   assert.equal(response.status, 200, await response.clone().text());
   const tokens = await response.json();
-  assert.ok(tokens.access_token && tokens.refresh_token);
+  assert.ok(tokens.access_token);
+  assert.equal(tokens.refresh_token, undefined, 'no refresh tokens are issued');
+  assert.ok(tokens.expires_in > ACCESS_TOKEN_LIFETIME_SECONDS - 60 && tokens.expires_in <= ACCESS_TOKEN_LIFETIME_SECONDS);
   assert.ok(!tokens.access_token.includes('.'), 'provider must issue revocable opaque access tokens');
   const principal = await f.service.verify(f.tokenRequest(tokens.access_token), { scopes: ['graph:read', 'media:read'] });
   assert.ok(!(principal instanceof Response), principal instanceof Response ? await principal.text() : '');
@@ -255,30 +270,13 @@ test('HTTP login → signed consent → PKCE code → opaque resource token → 
   assert.equal(principal.clientId, client.client_id);
   const db = new DatabaseSync(f.databasePath);
   assert.notEqual(db.prepare('SELECT token FROM oauthAccessToken').get().token, tokens.access_token);
-  assert.notEqual(db.prepare('SELECT token FROM oauthRefreshToken').get().token, tokens.refresh_token);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM oauthRefreshToken').get().n, 0);
   db.close();
   await f.restart();
   assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token), { scopes: ['graph:read'] })).clientId, client.client_id);
   assert.deepEqual((await f.service.listGrants(f.cookieHeaders())).map(grant => grant.clientId), [client.client_id]);
-  const refreshed = await f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, body: {
-    grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: client.client_id, resource: `${f.origin}/mcp`,
-  } });
-  assert.equal(refreshed.status, 200, await refreshed.clone().text());
-  const next = await refreshed.json();
-  assert.ok(next.refresh_token && next.refresh_token !== tokens.refresh_token);
-  const revoke = await f.request('/api/auth/oauth2/revoke', { method: 'POST', cookie: false, form: true, body: {
-    token: next.access_token, token_type_hint: 'access_token', client_id: client.client_id,
-  } });
-  assert.equal(revoke.status, 200, await revoke.clone().text());
-  assert.equal((await f.service.verify(f.tokenRequest(next.access_token), { scopes: [] })).status, 401);
-  const revokedRefresh = await f.request('/api/auth/oauth2/revoke', { method: 'POST', cookie: false, form: true, body: {
-    token: next.refresh_token, token_type_hint: 'refresh_token', client_id: client.client_id,
-  } });
-  assert.equal(revokedRefresh.status, 200, await revokedRefresh.clone().text());
-  const refreshAgain = await f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, body: {
-    grant_type: 'refresh_token', refresh_token: next.refresh_token, client_id: client.client_id, resource: `${f.origin}/mcp`,
-  } });
-  assert.equal(refreshAgain.status, 400);
+  assert.deepEqual(await f.service.revokeGrant(client.client_id, f.cookieHeaders()), { success: true });
+  assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token), { scopes: [] })).status, 401);
 });
 
 test('scope enforcement, signed-consent forgery, unknown tokens, wrong issuer/audience and expired tokens fail closed', async t => {
@@ -317,7 +315,7 @@ test('scope enforcement, signed-consent forgery, unknown tokens, wrong issuer/au
   db.close();
 });
 
-test('owner grant revocation removes consent and all access/refresh tokens; direct official delete-consent is hardened', async t => {
+test('owner grant revocation removes consent and tokens; consent management is not reachable over HTTP', async t => {
   const f = await fixture(t);
   await f.owner(); await f.login();
   const client = await f.register();
@@ -327,41 +325,73 @@ test('owner grant revocation removes consent and all access/refresh tokens; dire
   const tokens = await response.json();
   assert.equal((await f.service.listGrants({})).status, 401);
   assert.equal((await f.service.revokeGrant(client.client_id, {})).status, 401);
+  for (const [path, method] of [['/api/auth/oauth2/get-consents', 'GET'], ['/api/auth/oauth2/delete-consent', 'POST'], ['/api/auth/oauth2/update-consent', 'POST']]) {
+    assert.equal((await f.request(path, { method, ...(method === 'POST' ? { body: {} } : {}) })).status, 404, path);
+  }
+  assert.ok(!(await f.service.verify(f.tokenRequest(tokens.access_token)) instanceof Response));
   assert.deepEqual(await f.service.revokeGrant(client.client_id, f.cookieHeaders()), { success: true });
   assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token))).status, 401);
-  const refresh = await f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, body: {
-    grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: client.client_id, resource: `${f.origin}/mcp`,
-  } });
-  assert.equal(refresh.status, 400);
   assert.deepEqual(await f.service.listGrants(f.cookieHeaders()), []);
-  const flow2 = await f.authorize(client);
-  const response2 = await f.exchange(client, flow2);
-  const tokens2 = await response2.json();
-  const consents = await (await f.request('/api/auth/oauth2/get-consents')).json();
-  const denied = await f.request('/api/auth/oauth2/delete-consent', { method: 'POST', body: { id: consents[0].id }, headers: { origin: 'https://attacker.example' } });
-  assert.equal(denied.status, 403);
-  assert.ok(!(await f.service.verify(f.tokenRequest(tokens2.access_token)) instanceof Response));
-  const deleted = await f.request('/api/auth/oauth2/delete-consent', { method: 'POST', body: { id: consents[0].id } });
-  assert.equal(deleted.status, 200, await deleted.clone().text());
-  assert.equal((await f.service.verify(f.tokenRequest(tokens2.access_token))).status, 401);
 });
 
-test('refresh-token replay is rejected and revokes its token family', async t => {
+test('unneeded protocol surface is closed: endpoints, refresh, offline_access, DPoP and client secrets', async t => {
   const f = await fixture(t);
   await f.owner(); await f.login();
+  for (const [method, path] of [
+    ['GET', '/api/auth/jwks'], ['GET', '/api/auth/token'], ['POST', '/api/auth/oauth2/introspect'], ['POST', '/api/auth/oauth2/revoke'],
+    ['GET', '/api/auth/oauth2/userinfo'], ['GET', '/api/auth/oauth2/end-session'], ['POST', '/api/auth/oauth2/create-client'],
+    ['GET', '/api/auth/oauth2/get-clients'], ['POST', '/api/auth/oauth2/continue'], ['POST', '/api/auth/oauth2/authorize'],
+    ['POST', '/api/auth/sign-up/email'], ['POST', '/api/auth/sign-in/social'], ['POST', '/api/auth/request-password-reset'],
+    ['POST', '/api/auth/update-user'], ['POST', '/api/auth/delete-user'], ['GET', '/api/auth/list-sessions'], ['POST', '/api/auth/refresh-token'],
+    ['GET', '/.well-known/openid-configuration'], ['GET', '/.well-known/oauth-authorization-server'],
+  ]) {
+    assert.equal((await f.request(path, { method, ...(method === 'POST' ? { body: {} } : {}) })).status, 404, `${method} ${path}`);
+  }
   const client = await f.register();
-  const flow = await f.authorize(client);
-  const tokens = await (await f.exchange(client, flow)).json();
-  const refresh = value => f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, body: {
-    grant_type: 'refresh_token', refresh_token: value, client_id: client.client_id, resource: `${f.origin}/mcp`,
+  // offline_access is not a supported scope.
+  const offline = await f.request(f.authorization(client, 'graph:read offline_access').url);
+  assert.ok(offline.status >= 400 || new URL((await offline.json()).url, f.origin).searchParams.get('error') === 'invalid_scope');
+  // Refresh grants are rejected even for a client whose metadata lists refresh_token.
+  const legacy = await f.register({ client_name: 'Legacy refresh client', grant_types: ['authorization_code', 'refresh_token'] });
+  const legacyTokens = await (await f.exchange(legacy, await f.authorize(legacy))).json();
+  assert.ok(legacyTokens.access_token);
+  assert.equal(legacyTokens.refresh_token, undefined);
+  const refresh = await f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, body: {
+    grant_type: 'refresh_token', refresh_token: 'anything', client_id: legacy.client_id, resource: `${f.origin}/mcp`,
   } });
-  const rotated = await refresh(tokens.refresh_token);
-  assert.equal(rotated.status, 200, await rotated.clone().text());
-  const next = await rotated.json();
-  assert.notEqual(next.refresh_token, tokens.refresh_token);
-  assert.equal((await refresh(tokens.refresh_token)).status, 400);
-  assert.equal((await refresh(next.refresh_token)).status, 400);
-  assert.equal((await f.service.verify(f.tokenRequest(next.access_token))).status, 401);
+  assert.equal(refresh.status, 400);
+  assert.equal((await refresh.json()).error, 'unsupported_grant_type');
+  // Bearer only: DPoP proofs and DPoP-bound codes are refused.
+  const dpopFlow = await f.authorize(client);
+  const dpop = await f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, headers: { dpop: 'proof' }, body: {
+    grant_type: 'authorization_code', code: dpopFlow.code, client_id: client.client_id,
+    redirect_uri: client.redirect_uris[0], code_verifier: dpopFlow.verifier, resource: `${f.origin}/mcp`,
+  } });
+  assert.equal(dpop.status, 400);
+  assert.equal((await f.request(f.authorization(client, 'graph:read', { dpop_jkt: 'thumbprint' }).url)).status, 400);
+  const principal = await f.service.verify(new Request(`${f.origin}/mcp`, { headers: { authorization: 'DPoP token' } }));
+  assert.equal(principal.status, 401);
+  // Public clients only.
+  for (const method of ['client_secret_basic', 'client_secret_post', 'private_key_jwt']) {
+    const response = await f.request('/api/auth/oauth2/register', { method: 'POST', cookie: false, body: {
+      client_name: 'Confidential client', redirect_uris: ['http://127.0.0.1:9812/callback'], token_endpoint_auth_method: method,
+    } });
+    assert.equal(response.status, 400, method);
+    assert.equal((await response.json()).error, 'invalid_client_metadata');
+  }
+  const defaulted = await f.request('/api/auth/oauth2/register', { method: 'POST', cookie: false, body: {
+    client_name: 'Defaulted client', redirect_uris: ['http://127.0.0.1:9812/callback'],
+  } });
+  assert.equal(defaulted.status, 201, await defaulted.clone().text());
+  const registered = await defaulted.json();
+  assert.equal(registered.token_endpoint_auth_method, 'none');
+  assert.equal(registered.client_secret, undefined);
+  const secretFlow = await f.authorize(client);
+  assert.equal((await f.exchange(client, secretFlow, { client_secret: 'guess' })).status, 401);
+  assert.equal((await f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true,
+    headers: { authorization: `Basic ${Buffer.from(`${client.client_id}:guess`).toString('base64')}` }, body: {
+      grant_type: 'authorization_code', code: secretFlow.code, redirect_uri: client.redirect_uris[0], code_verifier: secretFlow.verifier, resource: `${f.origin}/mcp`,
+    } })).status, 401);
 });
 
 test('consent display requires signed unchanged query, owner session and existing enabled client', async t => {
@@ -431,12 +461,6 @@ test('PKCE S256 is mandatory, bad verifier and cross-resource exchange denied, d
   assert.equal(denied.location.searchParams.has('code'), false);
 });
 
-async function refreshToken(f, client, token) {
-  return f.request('/api/auth/oauth2/token', { method: 'POST', cookie: false, form: true, body: {
-    grant_type: 'refresh_token', refresh_token: token, client_id: client.client_id, resource: `${f.origin}/mcp`,
-  } });
-}
-
 function pendingCodeCount(f, client) {
   const db = new DatabaseSync(f.databasePath);
   try {
@@ -446,8 +470,8 @@ function pendingCodeCount(f, client) {
   } finally { db.close(); }
 }
 
-for (const route of ['owner', 'official']) {
-  test(`${route} revocation durably destroys outstanding code lineage, survives restart and permits ordinary reconnect`, async t => {
+{
+  test('owner revocation durably destroys outstanding code lineage, survives restart and permits ordinary reconnect', async t => {
     const f = await fixture(t);
     await f.owner(); await f.login();
     const client = await f.register();
@@ -456,57 +480,38 @@ for (const route of ['owner', 'official']) {
     const unrelatedClient = await f.register({ client_name: 'Unaffected client' });
     const unrelated = await f.authorize(unrelatedClient);
     assert.equal(pendingCodeCount(f, client), 1);
-    if (route === 'owner') {
-      assert.deepEqual(await f.service.revokeGrant(client.client_id, f.cookieHeaders()), { success: true });
-    } else {
-      const consents = await (await f.request('/api/auth/oauth2/get-consents')).json();
-      const consent = consents.find(value => value.clientId === client.client_id);
-      assert.equal((await f.request('/api/auth/oauth2/delete-consent', { method: 'POST', body: { id: consent.id } })).status, 200);
-    }
+    assert.deepEqual(await f.service.revokeGrant(client.client_id, f.cookieHeaders()), { success: true });
     assert.equal(pendingCodeCount(f, client), 0, 'actual official verification code row must be deleted');
     await f.restart();
     assert.equal((await f.exchange(client, outstanding)).status, 400);
-    assert.equal((await refreshToken(f, client, existing.refresh_token)).status, 400);
     assert.equal((await f.service.verify(f.tokenRequest(existing.access_token))).status, 401);
     const fresh = await f.authorize(client);
     assert.equal((await f.exchange(client, outstanding)).status, 400, 'reconsent must not revive pre-revoke code');
-    assert.equal((await refreshToken(f, client, existing.refresh_token)).status, 400);
     assert.equal((await f.service.verify(f.tokenRequest(existing.access_token))).status, 401);
     const reconnected = await (await f.exchange(client, fresh)).json();
     assert.equal((await f.service.verify(f.tokenRequest(reconnected.access_token))).clientId, client.client_id);
-    assert.equal((await refreshToken(f, client, reconnected.refresh_token)).status, 200);
     assert.equal((await f.exchange(unrelatedClient, unrelated)).status, 200, 'other client lineage is untouched');
   });
 }
 
-for (const route of ['update', 'approval']) {
-  test(`${route} scope narrowing destroys old credentials even when scopes are subsequently restored`, async t => {
+{
+  test('consent narrowing destroys old credentials even when scopes are subsequently restored', async t => {
     const f = await fixture(t);
     await f.owner(); await f.login();
     const client = await f.register();
     const outstanding = await f.authorize(client);
     const tokens = await (await f.exchange(client, await f.authorize(client))).json();
     const oldNarrowTokens = await (await f.exchange(client, await f.authorize(client, 'graph:read'))).json();
-    let narrowFlow;
-    if (route === 'update') {
-      const [consent] = await (await f.request('/api/auth/oauth2/get-consents')).json();
-      assert.equal((await f.request('/api/auth/oauth2/update-consent', {
-        method: 'POST', body: { id: consent.id, update: { scopes: ['graph:read'] } },
-      })).status, 200);
-    } else {
-      narrowFlow = await f.authorize(client, 'graph:read', { prompt: 'consent' });
-    }
+    const narrowFlow = await f.authorize(client, 'graph:read', { prompt: 'consent' });
     assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token))).status, 401);
-    assert.equal((await refreshToken(f, client, tokens.refresh_token)).status, 400);
     assert.equal((await f.service.verify(f.tokenRequest(oldNarrowTokens.access_token))).status, 401,
       'even old credentials whose scopes are still allowed must be invalidated');
     await f.restart();
     const restored = await f.authorize(client);
     assert.equal((await f.exchange(client, outstanding)).status, 400);
     assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token))).status, 401);
-    assert.equal((await refreshToken(f, client, tokens.refresh_token)).status, 400);
     assert.equal((await f.service.verify(f.tokenRequest(oldNarrowTokens.access_token))).status, 401);
-    if (narrowFlow) assert.equal((await f.exchange(client, narrowFlow)).status, 200, 'new narrower consent code remains usable');
+    assert.equal((await f.exchange(client, narrowFlow)).status, 200, 'new narrower consent code remains usable');
     assert.equal((await f.exchange(client, restored)).status, 200);
   });
 }
@@ -530,14 +535,13 @@ function pauseOfficialResponse(service, pathname) {
   return { entered, release, restore() { service.auth.handler = original; } };
 }
 
-for (const order of ['exchange-first', 'revoke-first', 'refresh-first']) {
+for (const order of ['exchange-first', 'revoke-first']) {
   test(`concurrent ${order} cannot leave credentials that survive revoke/reconsent`, { timeout: 15000 }, async t => {
     const f = await fixture(t);
     await f.owner(); await f.login();
     const client = await f.register();
     const flow = await f.authorize(client);
-    const initial = order === 'refresh-first' ? await (await f.exchange(client, flow)).json() : null;
-    const issue = () => initial ? refreshToken(f, client, initial.refresh_token) : f.exchange(client, flow);
+    const issue = () => f.exchange(client, flow);
     const pause = pauseOfficialResponse(f.service, order === 'revoke-first' ? '/api/auth/oauth2/delete-consent' : '/api/auth/oauth2/token');
     t.after(() => { pause.release(); pause.restore(); });
     let issuance, revocation;
@@ -560,7 +564,6 @@ for (const order of ['exchange-first', 'revoke-first', 'refresh-first']) {
     const fresh = await f.authorize(client);
     if (issued) {
       assert.equal((await f.service.verify(f.tokenRequest(issued.access_token))).status, 401);
-      assert.equal((await refreshToken(f, client, issued.refresh_token)).status, 400);
     }
     assert.equal((await f.exchange(client, flow)).status, 400);
     assert.equal((await f.exchange(client, fresh)).status, 200);
