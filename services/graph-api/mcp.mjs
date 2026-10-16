@@ -15,8 +15,8 @@ const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint
 const scalar = z.union([z.string().max(16384), z.number().finite().refine((n) => !Number.isInteger(n) || Number.isSafeInteger(n)), z.boolean(), z.null()]);
 const filterSchema = z.record(z.union([scalar, z.array(scalar).max(256)])).refine((x) => Object.keys(x).length <= 20);
 
-export function createMcpHandler({ store, token, archive, allowedOrigins = process.env.MCP_ALLOWED_ORIGINS || '' }) {
-  const cursor = cursors(token);
+export function createMcpHandler({ store, cursorKey, archive, allowedOrigins = process.env.MCP_ALLOWED_ORIGINS || '' }) {
+  const cursor = cursors(cursorKey);
   const origins = new Set(allowedOrigins.split(',').map((s) => s.trim()).filter(Boolean));
   const graphTools = [
     ['search_entities', 'Search Neo4j entities by case-insensitive property text and exact property filters. All kinds are ordinary properties. Results are live, not a snapshot.', {

@@ -35,13 +35,15 @@ before(async () => {
       headers.append('Set-Cookie', 'first=1; HttpOnly'); headers.append('Set-Cookie', 'second=2; HttpOnly');
       return new Response('{}', { headers });
     },
-    async setupOwner(body) { if (body.bootstrapToken !== token) throw new Error('never echo this secret'); },
+    async getOwnerSession(headers) { return headers.get('Cookie') === 'owner=session' ? { user: { id: 'synthetic-owner' } } : null; },
     async consentDetails() { return { clientName: '<script>bad</script>', scopes: ['graph:read'] }; },
     async listGrants(headers) { if (!headers.get('cookie')) throw new Error(); return []; },
     async revokeGrant() {},
     auth: { api: { getSession: async () => null } },
   };
-  server = createApiServer({ store, token, authService, authPublicUrl: 'https://canonical.test', archive: {
+  server = createApiServer({ store, cursorKey: token, authService, authPublicUrl: 'https://canonical.test', capture: {
+    proxy(req, res) { req.resume(); res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('synthetic capture'); },
+  }, archive: {
     proxyOriginal: async (req, res) => { res.writeHead(200); res.end('synthetic video'); },
   } });
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); origin = `http://127.0.0.1:${server.address().port}`;
@@ -74,15 +76,15 @@ test('canonical URL ignores untrusted host and forwarding headers', async () => 
   await fetch(origin + '/mcp', { headers: { 'X-Forwarded-Host': 'evil.invalid', 'X-Forwarded-Proto': 'http' } });
   assert.equal(seen.at(-1).url, 'https://canonical.test/mcp');
 });
-test('discovery is public, setup requires same-origin and API Set-Cookie headers survive', async () => {
+test('discovery is public, HTTP setup is absent and API Set-Cookie headers survive', async () => {
   const discovery = await fetch(origin + '/.well-known/oauth-protected-resource/mcp');
   assert.equal(discovery.status, 200);
   const response = await fetch(origin + '/api/auth/get-session');
   assert.equal(response.headers.getSetCookie().length, 2);
   const bad = await fetch(origin + '/auth/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapToken: token }) });
-  assert.equal(bad.status, 403);
+  assert.equal(bad.status, 404);
   const setup = await fetch(origin + '/auth/setup', { method: 'POST', headers: { Origin: 'https://canonical.test', 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapToken: token, email: 'owner@example.test', password: 'synthetic-long-password' }) });
-  assert.equal(setup.status, 201);
+  assert.equal(setup.status, 404);
   const large = await fetch(origin + '/api/auth/sign-in/email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ padding: 'x'.repeat(65537) }) });
   assert.equal(large.status, 413);
 });
@@ -92,6 +94,25 @@ test('account is session-gated; pages are CSP-protected and consent labels escap
   const response = await fetch(origin + '/auth/consent?untrusted=still-validated-by-core');
   assert.ok(response.headers.get('content-security-policy').includes("frame-ancestors 'none'"));
   const html = await response.text(); assert.ok(!html.includes('<script>bad</script>')); assert.ok(html.includes('&lt;script&gt;'));
-  const page = authPage('setup'); assert.ok(!page.includes(token)); assert.ok(page.includes('type="password"'));
+  const page = authPage('sign-in'); assert.ok(!page.includes(token)); assert.ok(page.includes('type="password"')); assert.ok(!page.includes('First-time setup'));
   new Function(AUTH_JS);
+});
+test('capture is owner-session-only, rejects CSRF and has a safe local login return', async () => {
+  const anonymous = await fetch(origin + '/', { redirect: 'manual' });
+  assert.equal(anonymous.status, 302); assert.equal(anonymous.headers.get('location'), '/auth/sign-in?return_to=%2F');
+  assert.equal((await fetch(origin + '/', { headers: { Cookie: 'owner=session' } })).status, 200);
+  assert.equal((await fetch(origin + '/assets/app.js', { headers: { Cookie: 'owner=session' } })).status, 200);
+  for (const headers of [{}, { Authorization: 'Bearer oauth-graph' }]) {
+    assert.equal((await fetch(origin + '/', { method: 'POST', headers: { Origin: 'https://canonical.test', ...headers }, body: 'synthetic bytes' })).status, 401);
+  }
+  assert.equal((await fetch(origin + '/', { method: 'POST', headers: { Origin: 'https://attacker.test', Cookie: 'owner=session' }, body: 'synthetic bytes' })).status, 403);
+  assert.equal((await fetch(origin + '/', { method: 'POST', headers: { Origin: 'https://canonical.test', Cookie: 'owner=session' }, body: 'synthetic bytes' })).status, 200);
+  for (const target of ['//attacker.test', '/\\\\attacker.test', '/%0aevil']) {
+    const response = await fetch(origin + '/auth/sign-in?return_to=' + encodeURIComponent(target));
+    // Percent-encoded characters may be a valid same-origin path but never an external redirect.
+    assert.ok([200, 400].includes(response.status));
+    if (!target.startsWith('/%')) assert.equal(response.status, 400);
+  }
+  assert.equal((await fetch(origin + '/auth/sign-in?return_to=%2F&return_to=%2Fevil')).status, 400);
+  assert.equal((await fetch(origin + '/auth/sign-in?return_to=%2F')).status, 200);
 });

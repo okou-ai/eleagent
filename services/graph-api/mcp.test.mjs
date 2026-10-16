@@ -5,8 +5,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createApiServer } from './server.mjs';
 import { ApiError } from './graph.mjs';
+import { resourceAuth } from './test-resource-auth.mjs';
 
+// Graph/protocol fixtures only; real OAuth is tested in auth.test.mjs and oauth-integration.test.mjs.
 const token = 'mcp-test-token-not-for-production-123456789';
+// Separate private signing fixture: production cursor keys are never exposed as auth credentials.
+const cursorKey = 'mcp-test-private-cursor-key-123456789012345';
 let server, origin, client, transport;
 const calls = [];
 const store = {
@@ -29,7 +33,7 @@ const archive = {
   async proxyOriginal(req, res) { res.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-2/3' }); res.end('abc'); },
 };
 before(async () => {
-  server = createApiServer({ store, token, archive });
+  server = createApiServer({ store, cursorKey, archive, ...resourceAuth(token) });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   origin = `http://127.0.0.1:${server.address().port}`;
   client = new Client({ name: 'eleagent-mcp-test', version: '1.0.0' });
@@ -79,12 +83,16 @@ test('tool errors do not expose driver messages', async () => {
   assert.equal(result.isError, true); assert.ok(!JSON.stringify(result).includes('secret driver'));
   assert.equal(json(await call('get_entity', { id: 'missing' })).error.code, 'not_found');
 });
-test('legacy mode requires bearer authentication for MCP and originals; Origin remains guarded', async () => {
+test('resource boundary requires fixture bearer for MCP, originals and REST; Origin remains guarded', async () => {
   const original = `/v1/archive/media/media_${'a'.repeat(32)}/original`;
   const denied = await fetch(`${origin}/mcp`, { method: 'POST', headers: { Origin: 'https://evil.invalid', 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(denied.status, 403);
-  assert.equal((await fetch(`${origin}/mcp`)).status, 401);
-  assert.equal((await fetch(origin + original)).status, 401);
+  for (const path of ['/mcp', original, '/v1/graph/entities']) {
+    for (const authorization of [undefined, 'Bearer incorrect', `Bearer ${cursorKey}`, `Basic ${token}`]) {
+      const response = await fetch(origin + path, { headers: authorization ? { Authorization: authorization } : {} });
+      assert.equal(response.status, 401);
+    }
+  }
   const video = await fetch(origin + original, { headers: { Authorization: `Bearer ${token}`, Range: 'bytes=0-2' } });
   assert.equal(video.status, 206); assert.equal(await video.text(), 'abc');
   assert.equal((await fetch(origin + '/v1/graph/entities')).status, 401);

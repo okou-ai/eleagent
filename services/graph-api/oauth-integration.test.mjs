@@ -18,8 +18,9 @@ test('official MCP OAuth SDK discovers, registers, authorizes, reads tools/media
   const dir = await mkdtemp(join(tmpdir(), 'eleagent-oauth-http-'));
   const listener = http.createServer(); listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const origin = `http://127.0.0.1:${listener.address().port}`;
-  const bootstrapToken = 'synthetic-http-setup-key-not-an-access-token-123';
-  const service = await createAuthService({ publicUrl: origin, databasePath: join(dir, 'auth.sqlite'), secret: randomBytes(48).toString('base64url'), bootstrapToken, ownerEmail: 'owner@example.test' });
+  const cursorKey = randomBytes(32).toString('hex');
+  const service = await createAuthService({ publicUrl: origin, databasePath: join(dir, 'auth.sqlite'), secret: randomBytes(48).toString('base64url') });
+  await service.setupOwner({ email: 'owner@example.test', password: 'synthetic-strong-owner-password' });
   const mediaId = `media_${'a'.repeat(32)}`; const original = Buffer.from('synthetic original video bytes');
   const store = {
     getEntity: async (id) => ({ id, properties: { kind: 'episode' } }),
@@ -28,7 +29,9 @@ test('official MCP OAuth SDK discovers, registers, authorizes, reads tools/media
     subgraph: async ({ ids }) => ({ entities: ids.map((id) => ({ id, properties: {} })), links: [], truncated: false }),
   };
   const metadata = { media_id: mediaId, original_url: `/v1/archive/media/${mediaId}/original`, original_requires_auth: true, size_bytes: original.length, sha256: createHash('sha256').update(original).digest('hex') };
-  const api = createApiServer({ store, token: bootstrapToken, authService: service, authPublicUrl: origin, archive: {
+  const api = createApiServer({ store, cursorKey, authService: service, authPublicUrl: origin, capture: {
+    proxy(req, res) { req.resume(); res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('Owner-only capture'); },
+  }, archive: {
     listVideoClips: async () => ({ items: [metadata], next_cursor: null, missing_media_ids: [], has_more: false }),
     getVideoClip: async () => metadata,
     proxyOriginal: async (req, res) => { const range = req.headers.range; res.writeHead(range ? 206 : 200, { 'Content-Type': 'video/mp4', 'Content-Length': range ? '3' : String(original.length) }); res.end(req.method === 'HEAD' ? undefined : range ? original.subarray(0, 3) : original); },
@@ -45,7 +48,8 @@ test('official MCP OAuth SDK discovers, registers, authorizes, reads tools/media
     for (const cookie of response.headers.getSetCookie()) { const pair = cookie.split(';')[0], at = pair.indexOf('='); cookies.set(pair.slice(0, at), pair.slice(at + 1)); }
     return response;
   }
-  assert.equal((await browser('/auth/setup', { bootstrapToken, email: 'owner@example.test', password: 'synthetic-strong-owner-password' })).status, 201);
+  assert.equal((await browser('/auth/setup', { email: 'intruder@example.test', password: 'synthetic-strong-owner-password' })).status, 404);
+  const anonymousCapture = await browser('/'); assert.equal(anonymousCapture.status, 302);
   const before = await fetch(origin + '/mcp'); assert.equal(before.status, 401); assert.ok(before.headers.get('www-authenticate').includes('resource_metadata='));
   const state = randomBytes(24).toString('base64url');
   const provider = {
@@ -84,7 +88,12 @@ test('official MCP OAuth SDK discovers, registers, authorizes, reads tools/media
   assert.equal((await fetch(origin + metadata.original_url)).status, 401);
   assert.equal((await fetch(origin + metadata.original_url, { headers: { ...headers, Range: 'bytes=0-2' } })).status, 206);
   assert.equal((await fetch(origin + '/mcp', { headers: { Cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join('; ') } })).status, 401, 'Browser cookie is not a resource bearer token');
-  assert.equal((await fetch(origin + '/mcp', { headers: { Authorization: `Bearer ${bootstrapToken}` } })).status, 401, 'Bootstrap key is not an access token');
+  assert.equal((await fetch(origin + '/mcp', { headers: { Authorization: `Bearer ${cursorKey}` } })).status, 401, 'Cursor signing material is not an access token');
+  assert.equal((await browser('/')).status, 200, 'Owner session can open capture without an API key');
+  const cookie = [...cookies].map(([k, v]) => `${k}=${v}`).join('; ');
+  assert.equal((await fetch(origin + '/', { method: 'POST', headers: { Origin: origin, Cookie: cookie }, body: 'synthetic recording' })).status, 200);
+  assert.equal((await fetch(origin + '/', { method: 'POST', headers: { Origin: 'https://untrusted.example', Cookie: cookie }, body: 'synthetic recording' })).status, 403);
+  assert.equal((await fetch(origin + '/', { method: 'POST', headers: { Origin: origin, ...headers }, body: 'synthetic recording' })).status, 401, 'Read-only OAuth token cannot upload captures');
   const grants = await browser('/auth/grants'); const applications = await grants.json(); assert.equal(applications.length, 1);
   assert.equal((await browser('/auth/revoke', { clientId: applications[0].clientId })).status, 200);
   assert.equal((await fetch(origin + metadata.original_url, { headers })).status, 401);

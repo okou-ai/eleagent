@@ -1,5 +1,4 @@
 import http from 'node:http';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { ApiError } from './graph.mjs';
 import { cursors, parseFilter, integer, string, queryParams } from './validation.mjs';
 import { createMcpHandler, TOOL_SCOPES } from './mcp.mjs';
@@ -29,22 +28,13 @@ async function jsonBody(req) {
   return result;
 }
 
-export function createApiServer({ store, token, archive, authService, authPublicUrl, onRequest = () => {} }) {
-  if (typeof token !== 'string' || token.length < 32) throw new Error('GRAPH_API_TOKEN must have at least 32 characters');
-  const expectedAuth = createHash('sha256').update(`Bearer ${token}`).digest();
-  const cursor = cursors(token);
-  const mcp = createMcpHandler({ store, token, archive });
-  if (authService && !authPublicUrl) throw new Error('OAuth requires an explicit public URL');
-  if (authService) mcp.origins.add(new URL(authPublicUrl).origin);
-  const requireBearer = (req, res) => {
-    const supplied = createHash('sha256').update((req.headers.authorization || '').replace(/^bearer /i, 'Bearer ')).digest();
-    if (!timingSafeEqual(supplied, expectedAuth)) {
-      res.setHeader('WWW-Authenticate', 'Bearer');
-      throw new ApiError(401, 'unauthorized', 'A valid Bearer token is required');
-    }
-  };
+export function createApiServer({ store, cursorKey, archive, capture, authService, authPublicUrl, onRequest = () => {} }) {
+  if (typeof cursorKey !== 'string' || cursorKey.length < 32) throw new Error('A private cursor signing key is required');
+  if (!authService || !authPublicUrl) throw new Error('OAuth and an explicit public URL are required');
+  const cursor = cursors(cursorKey);
+  const mcp = createMcpHandler({ store, cursorKey, archive });
+  mcp.origins.add(new URL(authPublicUrl).origin);
   const authorize = async (req, res, scopes) => {
-    if (!authService) { requireBearer(req, res); return true; }
     const result = await authService.verify(await authRequest(req, authPublicUrl), { scopes });
     if (result instanceof Response) { await sendAuthResponse(res, result); return false; }
     return true;
@@ -89,13 +79,6 @@ export function createApiServer({ store, token, archive, authService, authPublic
           res.writeHead(200, { 'Content-Type': url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript', 'Cache-Control': 'no-store' });
           return res.end(url.pathname.endsWith('.css') ? AUTH_CSS : AUTH_JS);
         }
-        if (req.method === 'POST' && url.pathname === '/auth/setup') {
-          requireSameOrigin(req, authPublicUrl); queryParams(url, []);
-          const body = await jsonBody(req);
-          if (Object.keys(body).some((key) => !['email', 'password', 'bootstrapToken'].includes(key))) throw bad('Unknown setup field');
-          try { await authService.setupOwner(body); } catch { throw new ApiError(403, 'setup_denied', 'Account setup is unavailable or the supplied details are invalid'); }
-          return send(201, { ok: true });
-        }
         if (url.pathname === '/auth/grants' && req.method === 'GET') {
           queryParams(url, []);
           try {
@@ -115,7 +98,7 @@ export function createApiServer({ store, token, archive, authService, authPublic
           } catch { throw new ApiError(403, 'revoke_denied', 'Sign in to revoke this application'); }
           return send(200, { ok: true });
         }
-        if (req.method === 'GET' && ['/auth/sign-in', '/auth/setup', '/auth/account', '/auth/consent'].includes(url.pathname)) {
+        if (req.method === 'GET' && ['/auth/sign-in', '/auth/account', '/auth/consent'].includes(url.pathname)) {
           if (url.pathname === '/auth/consent') {
             const details = await authService.consentDetails(await authRequest(req, authPublicUrl));
             if (details instanceof Response) return await sendAuthResponse(res, details);
@@ -125,9 +108,27 @@ export function createApiServer({ store, token, archive, authService, authPublic
             const session = await authService.auth.api.getSession({ headers: (await authRequest(req, authPublicUrl)).headers });
             if (!session) { res.writeHead(302, { Location: '/auth/sign-in' }); return res.end(); }
           }
+          if (url.pathname === '/auth/sign-in' && url.searchParams.has('return_to')) {
+            queryParams(url, ['return_to']);
+            const target = url.searchParams.get('return_to');
+            if (!target?.startsWith('/') || target.startsWith('//') || /[\\\u0000-\u0020]/.test(target) || new URL(target, authPublicUrl).origin !== new URL(authPublicUrl).origin) throw bad('Invalid sign-in return path');
+          }
           return sendAuthPage(res, url.pathname.slice('/auth/'.length));
         }
         throw new ApiError(404, 'not_found', 'Account route not found');
+      }
+      const capturePath = url.pathname === '/' || (['GET', 'HEAD'].includes(req.method) && (url.pathname === '/v1/observations/latest' || /^\/assets\/[a-zA-Z0-9_.-]+$/.test(url.pathname))) || (req.method === 'POST' && url.pathname === '/v1/clips');
+      if (capture && capturePath && ['GET', 'HEAD', 'POST'].includes(req.method)) {
+        route = 'capture';
+        if (req.method === 'POST') requireSameOrigin(req, authPublicUrl);
+        const session = await authService.getOwnerSession((await authRequest(req, authPublicUrl)).headers);
+        if (!session) {
+          if (['GET', 'HEAD'].includes(req.method)) {
+            res.writeHead(302, { Location: '/auth/sign-in?return_to=' + encodeURIComponent(req.url) }); return res.end();
+          }
+          req.resume(); return send(401, { error: { code: 'sign_in_required', message: 'Sign in to upload recordings' } });
+        }
+        return await capture.proxy(req, res);
       }
       if (url.pathname === '/mcp') {
         route = 'mcp';

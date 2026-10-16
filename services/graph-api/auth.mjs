@@ -7,7 +7,6 @@ import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { getOAuthProviderApi, verifyOAuthQueryParams } from '@better-auth/oauth-provider';
 import { createDpopReplayStore, enforceDpopBinding, parseAccessTokenAuthorization } from 'better-auth/oauth2';
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
@@ -29,12 +28,6 @@ function json(body, status = 200, headers = {}) {
   return Response.json(body, { status, headers: { 'cache-control': 'no-store', ...headers } });
 }
 
-function safeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const hash = value => createHash('sha256').update(value).digest();
-  return timingSafeEqual(hash(a), hash(b));
-}
-
 function setupError(status, message) {
   const error = new Error(message);
   error.status = error.statusCode = status;
@@ -42,13 +35,13 @@ function setupError(status, message) {
 }
 
 /** Real Better Auth OAuth provider. The caller owns the Node HTTP/Fetch bridge and UI. */
-export async function createAuthService({ publicUrl, databasePath, secret, bootstrapToken, ownerEmail } = {}) {
+export async function createAuthService({ publicUrl, databasePath, secret, ownerEmail } = {}) {
   const origin = canonicalOrigin(publicUrl);
   const issuer = `${origin}/api/auth`;
   const resource = `${origin}/mcp`;
   if (typeof secret !== 'string' || secret.length < 32) throw new Error('A persistent auth secret of at least 32 characters is required');
-  if (typeof bootstrapToken !== 'string' || !bootstrapToken.length) throw new Error('A bootstrap token is required');
   if (typeof databasePath !== 'string' || !databasePath.length) throw new Error('A dedicated SQLite databasePath is required');
+  // Optional library constraint for tests/embedders; the operator CLI has no fixed email.
   const expectedEmail = ownerEmail?.trim().toLowerCase();
   if (ownerEmail !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(expectedEmail)) throw new Error('Invalid ownerEmail');
 
@@ -152,6 +145,7 @@ export async function createAuthService({ publicUrl, databasePath, secret, boots
     const endpointContext = request => ({ context, request, headers: request.headers });
     const ownerId = () => database.prepare('SELECT user_id FROM graph_auth_owner WHERE singleton=1').get()?.user_id;
     const ownerSession = async request => {
+      if (closed) return null;
       const session = await auth.api.getSession({ headers: request.headers });
       return session?.user.id === ownerId() ? session : null;
     };
@@ -165,9 +159,10 @@ export async function createAuthService({ publicUrl, databasePath, secret, boots
       });
     };
 
+    // Local library API only: never expose this method through an HTTP route.
+    // Operators must stop graph-api before running init-owner.mjs (single writer).
     async function setupOwner(input = {}) {
       if (closed) throw setupError(503, 'Auth service is closed');
-      if (!safeEqual(input.bootstrapToken, bootstrapToken)) throw setupError(403, 'Owner setup denied');
       const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
       const password = input.password;
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || (expectedEmail && expectedEmail !== email)) throw setupError(400, 'Invalid owner email');
@@ -310,8 +305,9 @@ export async function createAuthService({ publicUrl, databasePath, secret, boots
       verify: (request, options) => serialized(() => verify(request, options)),
       revokeGrant: (clientId, headers) => serialized(() => revokeGrant(clientId, headers)),
       setupOwner, consentDetails, listGrants,
+      getOwnerSession: headers => ownerSession(new Request(`${origin}/auth/session`, { headers })),
       publicUrl: origin, issuer, resource,
-      getSetupStatus: () => ({ configured: Boolean(ownerId()), setupClaimed: Boolean(database.prepare('SELECT 1 FROM graph_auth_owner WHERE singleton=1').get()) }),
+      getSetupStatus: () => ({ configured: Boolean(ownerId()) || database.prepare('SELECT count(*) AS n FROM user').get().n !== 0, setupClaimed: Boolean(database.prepare('SELECT 1 FROM graph_auth_owner WHERE singleton=1').get()) }),
       async close() {
         if (!closed) {
           closed = true;

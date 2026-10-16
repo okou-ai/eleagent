@@ -10,9 +10,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { SignJWT } from 'jose';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { createAuthService } from './auth.mjs';
+import { authPage, AUTH_JS } from './auth-pages.mjs';
+import { createContext, runInContext } from 'node:vm';
 
 const SECRET = 'test-only-secret-with-more-than-thirty-two-characters';
-const BOOTSTRAP = 'test-only-existing-graph-api-token';
 const EMAIL = 'owner@example.com';
 const PASSWORD = 'test-only-strong-owner-password';
 
@@ -39,7 +40,7 @@ async function fixture(t) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const config = { publicUrl: origin, databasePath, secret: SECRET, bootstrapToken: BOOTSTRAP, ownerEmail: EMAIL };
+  const config = { publicUrl: origin, databasePath, secret: SECRET };
   service = await createAuthService(config);
   t.after(async () => { await service.close(); await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true }); });
   const cookies = new Map();
@@ -58,7 +59,7 @@ async function fixture(t) {
     return response;
   }
   const cookieHeaders = () => ({ cookie: [...cookies].map(([key, value]) => `${key}=${value}`).join('; ') });
-  async function owner() { return service.setupOwner({ email: EMAIL, password: PASSWORD, bootstrapToken: BOOTSTRAP }); }
+  async function owner() { return service.setupOwner({ email: EMAIL, password: PASSWORD }); }
   async function login(oauth_query) {
     const response = await request('/api/auth/sign-in/email', { method: 'POST', body: { email: EMAIL, password: PASSWORD, ...(oauth_query ? { oauth_query } : {}) } });
     assert.equal(response.status, 200, await response.clone().text());
@@ -121,6 +122,83 @@ async function fixture(t) {
   };
 }
 
+test('capture session gate accepts only the singleton owner, not just any authenticated session', async t => {
+  const f = await fixture(t);
+  assert.equal(await f.service.getOwnerSession({}), null);
+  await f.owner();
+  await f.login();
+  const owner = await f.service.getOwnerSession(f.cookieHeaders());
+  assert.equal(owner.user.email, EMAIL);
+  const context = await f.service.auth.$context;
+  const otherEmail = 'not-the-owner@example.net';
+  const other = await context.internalAdapter.createUser({ email: otherEmail, name: 'Not owner', emailVerified: true });
+  await context.internalAdapter.linkAccount({ userId: other.id, providerId: 'credential', accountId: other.id, password: await context.password.hash(PASSWORD) });
+  const response = await f.request('/api/auth/sign-in/email', { method: 'POST', body: { email: otherEmail, password: PASSWORD } });
+  assert.equal(response.status, 200);
+  assert.equal((await f.service.auth.api.getSession({ headers: f.cookieHeaders() })).user.id, other.id);
+  assert.equal(await f.service.getOwnerSession(f.cookieHeaders()), null);
+  await f.service.close();
+  assert.equal(await f.service.getOwnerSession(f.cookieHeaders()), null);
+});
+
+test('optional library ownerEmail constraint is not a default or CLI identity', async () => {
+  const config = { publicUrl: 'http://127.0.0.1:9080', databasePath: ':memory:', secret: SECRET };
+  await assert.rejects(createAuthService({ ...config, ownerEmail: 'invalid' }), /Invalid ownerEmail/);
+  const service = await createAuthService({ ...config, ownerEmail: '  Chosen@Example.net  ' });
+  try {
+    await assert.rejects(service.setupOwner({ email: EMAIL, password: PASSWORD }), error => error.status === 400);
+    assert.equal((await service.setupOwner({ email: 'chosen@example.net', password: PASSWORD })).email, 'chosen@example.net');
+  } finally { await service.close(); }
+});
+
+test('browser sign-in distinguishes local capture returns from signed OAuth and has no public setup UI', async () => {
+  assert.doesNotMatch(authPage('sign-in'), /First-time setup|\/auth\/setup|bootstrapToken/);
+  assert.doesNotMatch(AUTH_JS, /\/auth\/setup|bootstrapToken|page==='setup'/);
+  assert.match(authPage('account'), /href="\/">Back to Capture/);
+  const scope = createContext({ URL, URLSearchParams, location: { origin: 'https://capture.example' },
+    document: { querySelector: () => ({}), body: { dataset: { page: 'test' } } } });
+  runInContext(AUTH_JS, scope);
+  const continuation = search => JSON.parse(runInContext(`JSON.stringify(loginContinuation(${JSON.stringify(search)}))`, scope));
+  assert.deepEqual(continuation('?return_to=%2F'), { returnTo: '/' });
+  assert.deepEqual(continuation('?return_to=%2Frecordings%3Fday%3Dtoday'), { returnTo: '/recordings?day=today' });
+  assert.deepEqual(continuation(''), {});
+  const oauth = 'client_id=client&scope=graph%3Aread&sig=signature';
+  assert.deepEqual(continuation(`?${oauth}`), { oauthQuery: oauth });
+  for (const path of ['https://evil.example/', '//evil.example', '/\\\\evil.example', '/ok\nnext', '/ok\u007fnext', '', 'relative']) {
+    assert.throws(() => continuation(`?return_to=${encodeURIComponent(path)}`), /Invalid return path/);
+  }
+  for (const query of ['?return_to=%2F&return_to=%2Fother', '?return_to=%2F&sig=signature']) {
+    assert.throws(() => continuation(query), /Invalid return path/);
+  }
+});
+
+test('browser submit sends return_to login without oauth_query and preserves signed OAuth flow', async () => {
+  for (const search of ['?return_to=%2F', '?return_to=%2Frecordings%3Fday%3Dtoday', '?return_to=%2F%2Fevil.example', '?client_id=client&sig=signed']) {
+    let submitted;
+    let destination;
+    const form = { addEventListener: (_, handler) => { submitted = handler; }, querySelectorAll: () => [], reset() {} };
+    const calls = [];
+    const scope = createContext({ URL, URLSearchParams,
+      location: { origin: 'https://capture.example', search, assign: url => { destination = url; } },
+      document: { querySelector: selector => selector === '#status' ? {} : form, body: { dataset: { page: 'sign-in' } } },
+      FormData: class { get(key) { return key === 'email' ? EMAIL : PASSWORD; } },
+      fetch: async (path, options) => { calls.push({ path, body: JSON.parse(options.body) }); return { ok: true, json: async () => ({ redirect: true, url: '/auth/consent?signed=1' }) }; },
+    });
+    runInContext(AUTH_JS, scope);
+    await submitted({ preventDefault() {} });
+    if (search.includes('evil.example')) {
+      assert.equal(calls.length, 0);
+      assert.equal(destination, undefined);
+    } else if (search.includes('return_to')) {
+      assert.deepEqual(calls, [{ path: '/api/auth/sign-in/email', body: { email: EMAIL, password: PASSWORD } }]);
+      assert.equal(destination, `https://capture.example${search.includes('recordings') ? '/recordings?day=today' : '/'}`);
+    } else {
+      assert.equal(calls[0].body.oauth_query, search.slice(1));
+      assert.equal(destination, 'https://capture.example/auth/consent?signed=1');
+    }
+  }
+});
+
 test('official metadata, closed signup, canonical origin, private persistent WAL database and first-owner latch', async t => {
   const f = await fixture(t);
   const metadata = await (await f.request('/.well-known/oauth-authorization-server/api/auth')).json();
@@ -133,7 +211,12 @@ test('official metadata, closed signup, canonical origin, private persistent WAL
   assert.deepEqual(resource.scopes_supported, ['graph:read', 'media:read']);
   const signup = await f.request('/api/auth/sign-up/email', { method: 'POST', body: { name: 'attacker', email: 'attacker@example.com', password: PASSWORD } });
   assert.ok(signup.status >= 400);
-  await assert.rejects(f.service.setupOwner({ email: EMAIL, password: PASSWORD, bootstrapToken: 'wrong' }), error => error.status === 403);
+  assert.deepEqual(f.service.getSetupStatus(), { configured: false, setupClaimed: false });
+  for (const path of ['/auth/setup', '/api/auth/setup-owner']) {
+    assert.ok((await f.request(path, { method: 'POST', body: { email: EMAIL, password: PASSWORD } })).status >= 400);
+  }
+  await assert.rejects(f.service.setupOwner({ email: 'invalid', password: PASSWORD }), error => error.status === 400);
+  await assert.rejects(f.service.setupOwner({ email: EMAIL, password: 'short' }), error => error.status === 400);
   const attempts = await Promise.allSettled([f.owner(), f.owner()]);
   assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
   assert.equal(f.service.getSetupStatus().configured, true);
@@ -215,7 +298,6 @@ test('scope enforcement, signed-consent forgery, unknown tokens, wrong issuer/au
   const noToken = await f.service.verify(new Request(`${f.origin}/mcp`), { scopes: [] });
   assert.equal(noToken.status, 401);
   assert.match(noToken.headers.get('www-authenticate'), /oauth-protected-resource\/mcp/);
-  assert.equal((await f.service.verify(f.tokenRequest(BOOTSTRAP))).status, 401);
   assert.equal((await f.service.verify(f.tokenRequest('unknown'))).status, 401);
   const forged = await new SignJWT({ sub: allowed.userId, scope: 'graph:read media:read' }).setProtectedHeader({ alg: 'HS256' })
     .setIssuer('https://attacker.example/api/auth').setAudience(`${f.origin}/mcp`).setExpirationTime('1h').sign(new TextEncoder().encode(SECRET));
