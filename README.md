@@ -2,7 +2,9 @@
 
 **An elephant's memory. An agent's mind.**
 
-A self-hosted personal memory system. Capture audio and video in a browser, retain the original evidence, organize observations into a graph, and consolidate the day into memories and a diary during a scheduled sleep cycle.
+A self-hosted personal memory system. Built with privacy as its starting point, Eleagent keeps all storage and model inference on your own hardware—no external LLM API calls.
+
+Capture audio and video in a browser, retain the original evidence, organize observations into a graph, and consolidate the day into memories and a diary during a scheduled sleep cycle.
 
 Eleagent is an experimental reference implementation. Its initial hardware profile uses two NVIDIA DGX Spark systems: daytime perception shares the GPUs with a larger model at night.
 
