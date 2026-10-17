@@ -569,3 +569,59 @@ for (const order of ['exchange-first', 'revoke-first']) {
     assert.equal((await f.exchange(client, fresh)).status, 200);
   });
 }
+
+test('resource verification is local: CIMD clients are never re-fetched per request', async t => {
+  const f = await fixture(t);
+  await f.owner(); await f.login();
+  // A CIMD client whose metadata URL cannot be fetched. Resolving it would fail,
+  // so verification only succeeds if it reads local state.
+  const clientId = 'https://metadata.invalid/client.json';
+  const token = randomBytes(32).toString('base64url');
+  const now = new Date();
+  const db = new DatabaseSync(f.databasePath);
+  const ownerId = db.prepare('SELECT user_id FROM graph_auth_owner').get().user_id;
+  db.prepare(`INSERT INTO oauthClient (id, clientId, clientDiscoveryId, disabled, scopes, redirectUris, tokenEndpointAuthMethod,
+    grantTypes, responseTypes, requirePKCE, name, createdAt, updatedAt) VALUES (?, ?, 'cimd', 0, ?, ?, 'none', ?, ?, 1, 'Distributed client', ?, ?)`)
+    .run('cimd-client', clientId, JSON.stringify(['graph:read', 'media:read']), JSON.stringify(['https://app.example/callback']),
+      JSON.stringify(['authorization_code']), JSON.stringify(['code']), now.toISOString(), now.toISOString());
+  db.prepare('INSERT INTO oauthConsent (id, clientId, userId, scopes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)')
+    .run('cimd-consent', clientId, ownerId, JSON.stringify(['graph:read', 'media:read']), now.toISOString(), now.toISOString());
+  db.prepare('INSERT INTO oauthAccessToken (id, token, clientId, userId, resources, scopes, expiresAt, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run('cimd-token', createHash('sha256').update(token).digest('base64url'), clientId, ownerId, JSON.stringify([`${f.origin}/mcp`]),
+      JSON.stringify(['graph:read', 'media:read']), new Date(Date.now() + ACCESS_TOKEN_LIFETIME_SECONDS * 1000).toISOString(), now.toISOString());
+  db.close();
+  for (let i = 0; i < 100; i++) {
+    const principal = await f.service.verify(f.tokenRequest(token), { scopes: ['graph:read', 'media:read'] });
+    assert.equal(principal.clientId, clientId, `verification ${i + 1} must not depend on a metadata fetch`);
+  }
+});
+
+test('access outlives the approving browser session and ends on revocation, expiry or client disable', async t => {
+  const f = await fixture(t);
+  await f.owner(); await f.login();
+  const client = await f.register();
+  const tokens = await (await f.exchange(client, await f.authorize(client))).json();
+  const db = new DatabaseSync(f.databasePath);
+  assert.equal(db.prepare('SELECT sessionId FROM oauthAccessToken').get().sessionId, null, 'issued tokens are not session-bound');
+  // A token bound before this change is detached when the service starts.
+  const sessionId = db.prepare('SELECT id FROM session LIMIT 1').get().id;
+  db.prepare('UPDATE oauthAccessToken SET sessionId=?').run(sessionId);
+  await f.restart();
+  assert.equal(db.prepare('SELECT sessionId FROM oauthAccessToken').get().sessionId, null);
+  await f.login();
+  assert.equal((await f.request('/api/auth/change-password', { method: 'POST', body: {
+    currentPassword: PASSWORD, newPassword: `${PASSWORD}-changed`, revokeOtherSessions: true,
+  } })).status, 200);
+  assert.equal((await f.request('/api/auth/sign-out', { method: 'POST', body: {} })).status, 200);
+  db.prepare('DELETE FROM session').run();
+  assert.equal(db.prepare('SELECT count(*) AS n FROM oauthAccessToken WHERE revoked IS NOT NULL').get().n, 0);
+  assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token), { scopes: ['graph:read'] })).clientId, client.client_id);
+  db.prepare('UPDATE oauthClient SET disabled=1 WHERE clientId=?').run(client.client_id);
+  assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token))).status, 401);
+  db.prepare('UPDATE oauthClient SET disabled=0 WHERE clientId=?').run(client.client_id);
+  db.prepare('UPDATE oauthAccessToken SET revoked=?').run(new Date().toISOString());
+  assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token))).status, 401);
+  db.prepare('UPDATE oauthAccessToken SET revoked=NULL, expiresAt=?').run(new Date(Date.now() - 1000).toISOString());
+  assert.equal((await f.service.verify(f.tokenRequest(tokens.access_token))).status, 401);
+  db.close();
+});
