@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { Memory, pairKey } from './memory.mjs';
 import { readTimeline } from './timeline.mjs';
+import { zonedDateTime } from './util.mjs';
 
 const at = (seconds) => new Date(Date.parse('2026-10-14T12:00:00Z') + seconds * 1000).toISOString();
 const event = (id, seconds, kind = 'minicpm', capture = 'capture-1') => ({ event_id: id, kind, capture_id: capture,
@@ -124,4 +125,23 @@ test('memory evidence does not turn model references or missing dates into a use
   assert.match(view.text, /source material count 5; evidence time envelope unknown – unknown/);
   assert.match(view.text, /not recall histories/);
   assert.equal(m.nodes.get(entity.id).occurrences, 5);
+});
+
+test('recall_day places memories on a day only by evidence time, never by the night that created them', async (t) => {
+  const local = (day, hour, minute = 0) => zonedDateTime(day, hour, minute).toISOString();
+  const lastNight = local('2026-10-14', 0, 38);
+  const previous = { id: 'event:previous', kind: 'event', layer: 'memory', name: 'Previous standup', t_start: local('2026-10-13', 10, 41), t_last: local('2026-10-13', 10, 51), created_at: lastNight };
+  const previousTalk = { id: 'conversation:previous', kind: 'conversation', layer: 'memory', name: 'Previous talk', t_start: local('2026-10-13', 10, 42), t_last: local('2026-10-13', 10, 49), created_at: lastNight };
+  const today = { id: 'event:today', kind: 'event', layer: 'memory', name: 'Evening walk', t_start: local('2026-10-14', 19, 47), t_last: local('2026-10-14', 20, 3), created_at: local('2026-10-15', 0, 53) };
+  const untimed = { id: 'object:untimed', kind: 'object', layer: 'memory', name: 'Untimed object', created_at: local('2026-10-14', 9) };
+  const m = memory(t, { [previous.id]: previous, [previousTalk.id]: previousTalk, [today.id]: today, [untimed.id]: untimed });
+  const { text } = await m.recall_day();
+  const section = (title) => text.split(`## ${title}`)[1].split('\n## ')[0];
+  assert.match(text, /This day already has 1 memory entities and 0 conversations/);
+  assert.match(section('Memory entities of the day'), /event:today/);
+  for (const id of ['event:previous', 'object:untimed']) {
+    assert.doesNotMatch(section('Memory entities of the day'), new RegExp(id));
+    assert.match(section('All long-term memory entities'), new RegExp(id));
+  }
+  assert.doesNotMatch(section("The day's conversations"), /conversation:previous/);
 });
