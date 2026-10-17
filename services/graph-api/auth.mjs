@@ -4,6 +4,7 @@ import { mcp } from '@better-auth/mcp';
 import { cimd } from '@better-auth/cimd';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { getOAuthProviderApi, verifyOAuthQueryParams } from '@better-auth/oauth-provider';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { chmod, lstat, mkdir, open } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -136,6 +137,12 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
     )`);
     const context = await auth.$context;
     const providerOptions = provider.options;
+    // Better Auth binds access tokens to the browser session that approved them
+    // and revokes them when that session ends (sign-out, password change,
+    // session expiry). Grants here last until expiry or revocation at
+    // /auth/account instead, so issued tokens are detached from the session.
+    const detachFromSession = database.prepare('UPDATE oauthAccessToken SET sessionId=NULL WHERE token=?');
+    database.prepare('UPDATE oauthAccessToken SET sessionId=NULL WHERE sessionId IS NOT NULL AND revoked IS NULL').run();
     // One service instance / one Node process owns this DB. All official HTTP
     // issuance (including login continuations), consent changes, revocation and
     // resource verification share this queue. This is NOT a cross-process lock;
@@ -209,23 +216,41 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
       }
     }
 
+    // Resource-side token verification reads only local SQLite state. It never
+    // resolves client metadata (a CIMD client would trigger a remote fetch on
+    // every request) and does not depend on the browser session that approved
+    // the grant: access lasts until expiry or revocation at /auth/account.
+    const findAccessToken = database.prepare(`SELECT clientId, userId, resources, scopes, expiresAt, revoked, confirmation
+      FROM oauthAccessToken WHERE token=?`);
+    const findClient = database.prepare('SELECT disabled FROM oauthClient WHERE clientId=?');
+    const toMs = value => typeof value === 'number' ? value : /^\d+$/.test(String(value ?? '')) ? Number(value) : Date.parse(value ?? '');
+    const list = value => {
+      try {
+        const parsed = JSON.parse(value ?? '[]');
+        return Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string') : [];
+      } catch { return []; }
+    };
+
     async function verify(request, { scopes = [] } = {}) {
       if (closed) return json({ error: 'auth_unavailable' }, 503);
       if (!Array.isArray(scopes) || scopes.some(scope => !RESOURCE_SCOPES.includes(scope))) throw new TypeError('Unknown required resource scope');
-      let claims;
       try {
         const bearer = /^Bearer ([A-Za-z0-9._~+/-]+=*)$/i.exec(request.headers.get('authorization') ?? '');
         if (!bearer) return challenge(401, scopes);
-        // Reads current DB state, so a revoked grant fails immediately.
-        claims = await getOAuthProviderApi(endpointContext(request), providerOptions).requireActiveAccessToken(bearer[1]);
-        const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-        if (claims.iss !== issuer || !audience.includes(resource) || !claims.sub || claims.sub !== ownerId() ||
-            typeof claims.exp !== 'number' || claims.exp <= Math.floor(Date.now() / 1000) || claims.cnf) return challenge(401, scopes, true);
-        const consent = await consentFor(claims.sub, claims.client_id);
-        const granted = typeof claims.scope === 'string' ? claims.scope.split(/\s+/).filter(Boolean) : [];
+        // Better Auth stores opaque tokens as unpadded base64url SHA-256.
+        const token = findAccessToken.get(createHash('sha256').update(bearer[1]).digest('base64url'));
+        const expiresAt = toMs(token?.expiresAt);
+        const audience = list(token?.resources);
+        const client = token?.clientId ? findClient.get(token.clientId) : undefined;
+        if (!token || token.revoked || token.confirmation || !(expiresAt > Date.now()) || !token.userId || token.userId !== ownerId() ||
+            !audience.includes(resource) || !client || client.disabled) return challenge(401, scopes, true);
+        const granted = list(token.scopes);
+        const consent = await consentFor(token.userId, token.clientId);
         if (!consent || granted.some(scope => !consent.scopes.includes(scope))) return challenge(401, scopes, true);
         if (scopes.some(scope => !granted.includes(scope))) return challenge(403, scopes);
-        return { userId: claims.sub, clientId: claims.client_id, scopes: granted, claims };
+        return { userId: token.userId, clientId: token.clientId, scopes: granted, claims: {
+          iss: issuer, aud: audience, sub: token.userId, client_id: token.clientId, scope: granted.join(' '), exp: Math.floor(expiresAt / 1000),
+        } };
       } catch {
         // No token values or provider errors escape into logs or responses.
         return challenge(401, scopes, true);
@@ -341,7 +366,12 @@ export async function createAuthService({ publicUrl, databasePath, secret, owner
         headers.delete('content-length');
         request = new Request(request, { headers, body: JSON.stringify({ ...body, token_endpoint_auth_method: 'none' }) });
       }
-      return handler(request);
+      const response = await handler(request);
+      if (url.pathname === '/api/auth/oauth2/token' && response.ok) {
+        const issued = await response.clone().json().catch(() => null);
+        if (typeof issued?.access_token === 'string') detachFromSession.run(createHash('sha256').update(issued.access_token).digest('base64url'));
+      }
+      return response;
     }
 
     async function listGrants(headers) {
