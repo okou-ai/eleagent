@@ -7,6 +7,7 @@ import { createApiServer } from './server.mjs';
 import { ArchiveClient } from './archive.mjs';
 import { createAuthService } from './auth.mjs';
 import { createCaptureProxy } from './capture-proxy.mjs';
+import { createLiveHandler } from './live.mjs';
 
 const auth = process.env.NEO4J_AUTH || '';
 const slash = auth.indexOf('/');
@@ -45,7 +46,9 @@ const capture = process.env.OBSERVER_URL ? createCaptureProxy({
   url: process.env.OBSERVER_URL, token: process.env.OBSERVER_INTERNAL_TOKEN,
   caFile: process.env.OBSERVER_CA_FILE || undefined, webRoot: process.env.CAPTURE_WEB_ROOT,
 }) : undefined;
-const server = createApiServer({ store, cursorKey, archive, capture, authService, authPublicUrl, onRequest(route, status, seconds) {
+// Experimental on-device annotation page, enabled only when its static root is mounted.
+const live = process.env.LIVE_ROOT ? createLiveHandler({ store, rootDir: process.env.LIVE_ROOT }) : undefined;
+const server = createApiServer({ store, cursorKey, archive, capture, live, authService, authPublicUrl, onRequest(route, status, seconds) {
   const key = `route="${route}",status="${status}"`;
   counts.set(key, (counts.get(key) || 0) + 1);
   const old = durations.get(route) || { count: 0, sum: 0 };
