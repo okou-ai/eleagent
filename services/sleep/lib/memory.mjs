@@ -263,11 +263,8 @@ export class Memory {
     return { text: lines.join('\n') };
   }
 
-  /** A sleep after midnight stamps the previous day's memories with the next date, so creation time only stands in when there is no evidence time. */
-  dayOf(n) {
-    const evidence = [n.t_start, n.t_last].filter(Boolean);
-    return (evidence.length ? evidence : [n.created_at].filter(Boolean)).map((t) => localDate(new Date(t)));
-  }
+  /** Evidence time only: a sleep after midnight stamps the previous day's memories with the next date, so created_at never places a memory on a day. */
+  dayOf(n) { return [n.t_start, n.t_last].filter(Boolean).map((t) => localDate(new Date(t))); }
 
   duplicateHints(list) {
     const out = [];

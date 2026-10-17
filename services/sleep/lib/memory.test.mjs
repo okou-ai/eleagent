@@ -127,7 +127,7 @@ test('memory evidence does not turn model references or missing dates into a use
   assert.equal(m.nodes.get(entity.id).occurrences, 5);
 });
 
-test('recall_day places memories by evidence time, not by the night that created them', async (t) => {
+test('recall_day places memories on a day only by evidence time, never by the night that created them', async (t) => {
   const local = (day, hour, minute = 0) => zonedDateTime(day, hour, minute).toISOString();
   const lastNight = local('2026-10-14', 0, 38);
   const previous = { id: 'event:previous', kind: 'event', layer: 'memory', name: 'Previous standup', t_start: local('2026-10-13', 10, 41), t_last: local('2026-10-13', 10, 51), created_at: lastNight };
@@ -137,10 +137,11 @@ test('recall_day places memories by evidence time, not by the night that created
   const m = memory(t, { [previous.id]: previous, [previousTalk.id]: previousTalk, [today.id]: today, [untimed.id]: untimed });
   const { text } = await m.recall_day();
   const section = (title) => text.split(`## ${title}`)[1].split('\n## ')[0];
-  assert.match(text, /This day already has 2 memory entities and 0 conversations/);
+  assert.match(text, /This day already has 1 memory entities and 0 conversations/);
   assert.match(section('Memory entities of the day'), /event:today/);
-  assert.match(section('Memory entities of the day'), /object:untimed/);
-  assert.doesNotMatch(section('Memory entities of the day'), /event:previous/);
+  for (const id of ['event:previous', 'object:untimed']) {
+    assert.doesNotMatch(section('Memory entities of the day'), new RegExp(id));
+    assert.match(section('All long-term memory entities'), new RegExp(id));
+  }
   assert.doesNotMatch(section("The day's conversations"), /conversation:previous/);
-  assert.match(section('All long-term memory entities'), /event:previous/);
 });
