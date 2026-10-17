@@ -38,10 +38,10 @@ function roundHalfEven(x) {
 }
 
 // ultralytics LetterBox.get_params with new_shape 640, auto=True (rect: .pt predict), stride 32, center, scaleup.
-function letterboxParams(width, height) {
-  const r = Math.min(YOLOE_IMAGE_SIZE / height, YOLOE_IMAGE_SIZE / width);
+function letterboxParams(width, height, size) {
+  const r = Math.min(size / height, size / width);
   const newWidth = roundHalfEven(width * r), newHeight = roundHalfEven(height * r);
-  const dw = ((YOLOE_IMAGE_SIZE - newWidth) % STRIDE) / 2, dh = ((YOLOE_IMAGE_SIZE - newHeight) % STRIDE) / 2;
+  const dw = ((size - newWidth) % STRIDE) / 2, dh = ((size - newHeight) % STRIDE) / 2;
   const top = roundHalfEven(dh - 0.1), bottom = roundHalfEven(dh + 0.1);
   const left = roundHalfEven(dw - 0.1), right = roundHalfEven(dw + 0.1);
   return { gain: r, newWidth, newHeight, top, left, inputWidth: newWidth + left + right, inputHeight: newHeight + top + bottom };
@@ -111,8 +111,9 @@ function resizeLinear(rgba, width, height, outW, outH) {
 
 // BasePredictor.preprocess for one frame: LetterBox (resize as above, cv2.copyMakeBorder with 114) then BGR->RGB,
 // HWC->CHW, /255. Input H and W are multiples of 32 (e.g. 1280x720 -> 640x384), as the server's rect predict uses.
-export function prepareYoloeInput(rgba, width, height) {
-  const letterbox = letterboxParams(width, height);
+// size is the server's imgsz (640); a phone may pass a smaller multiple of 32 to cut activation memory.
+export function prepareYoloeInput(rgba, width, height, size = YOLOE_IMAGE_SIZE) {
+  const letterbox = letterboxParams(width, height, size);
   const { newWidth, newHeight, top, left, inputWidth, inputHeight } = letterbox;
   let resized;
   if (newWidth === width && newHeight === height) {

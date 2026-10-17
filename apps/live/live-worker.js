@@ -7,13 +7,32 @@ import { downloadProgress, loadModel } from '/live/models.js';
 import { DINO_SIZE, decodeYoloe, dinoEmbedding, objectQuality, prepareDinoInput, prepareYoloeInput } from '/live/objects.js';
 import { ASSIGN_SIM, MATCH_MARGIN, MATCH_SIM, MIN_SPEECH_SECONDS, RECENT_MS, VOICE_SAMPLE_RATE, fbank, prepareCamppInput, speakerEmbedding, speechOnly } from '/live/voice.js';
 
+// Memory accounting for the HUD and the crash report: GPU buffers (onnxruntime destroys the ones it frees) and the
+// onnxruntime wasm heap. Both hooks must be installed before onnxruntime loads.
+const gpu = { live: 0, peak: 0 }, heaps = [];
+if (self.GPUDevice) {
+  const createBuffer = GPUDevice.prototype.createBuffer;
+  GPUDevice.prototype.createBuffer = function (descriptor) {
+    const buffer = createBuffer.call(this, descriptor), size = descriptor.size, destroy = buffer.destroy;
+    let freed = false;
+    gpu.live += size;
+    gpu.peak = Math.max(gpu.peak, gpu.live);
+    buffer.destroy = function () { if (!freed) { freed = true; gpu.live -= size; } return destroy.call(this); };
+    return buffer;
+  };
+}
+const NativeMemory = WebAssembly.Memory;
+WebAssembly.Memory = function Memory(descriptor) { const memory = new NativeMemory(descriptor); heaps.push(memory); return memory; };
+WebAssembly.Memory.prototype = NativeMemory.prototype;
+const memory = () => ({ gpuMB: gpu.live / 1e6, gpuPeakMB: gpu.peak / 1e6, heapMB: heaps.reduce((sum, heap) => sum + heap.buffer.byteLength, 0) / 1e6 });
+
 const MIN_EMBED_FACE = 64; // Server rule: faces shorter than 64 px are not embedded.
 const CROP_MARGIN = 0.5;   // Identity crops extend each side by half the face size.
 const MIN_VOICE_SECONDS = 0.8; // Below this CAM++ embeddings are too noisy to assign even to a recent speaker.
 let ort, options, yunet, sface, campplus, yoloe, dino, objectNames = [];
 let candidates = [], thresholds = { threshold: 0.55, margin: 0.08 };
 let voices = [], voiceThresholds = { threshold: MATCH_SIM, margin: MATCH_MARGIN };
-let objects = [], objectThresholds = { threshold: 0.65, margin: 0.1 };
+let objects = [], objectThresholds = { threshold: 0.65, margin: 0.1 }, objectSize;
 const recent = new Map(); // person id -> { name, heard, at }: speakers matched in the last 15 minutes
 const contexts = new Map();
 
@@ -65,13 +84,15 @@ function loader(scope) {
   return { session, progress, totals };
 }
 
-async function init({ webgpu, threads, identity = true, voice = true, voiceWebgpu = false }) {
+async function init({ webgpu, threads, identity = true, voice = true, voiceWebgpu = false, gpuCache = 'disabled' }) {
   // The pure WASM build is half the size of the WebGPU build and is all a phone without WebGPU needs.
   ort = await import(webgpu ? '/live/assets/ort/ort.webgpu.min.mjs' : '/live/assets/ort/ort.wasm.min.mjs');
   ort.env.wasm.wasmPaths = '/live/assets/ort/';
   ort.env.wasm.numThreads = threads;
-  // A growing CPU arena never returns memory to the page; phones run out of it.
-  options = { executionProviders: webgpu ? ['webgpu', 'wasm'] : ['wasm'], enableCpuMemArena: false, enableMemPattern: false };
+  // A growing CPU arena never returns memory to the page, and onnxruntime's GPU buffer cache keeps every freed
+  // intermediate of every shape it has seen (hundreds of MB after one object pass); phones run out of both.
+  const gpuProvider = { name: 'webgpu', storageBufferCacheMode: gpuCache };
+  options = { executionProviders: webgpu ? [gpuProvider, 'wasm'] : ['wasm'], enableCpuMemArena: false, enableMemPattern: false };
   const { session, progress, totals } = loader('face');
   yunet = await session('yunet.onnx');
   sface = identity ? await session('sface.onnx') : null;
@@ -83,12 +104,13 @@ async function init({ webgpu, threads, identity = true, voice = true, voiceWebgp
 
 // Loaded after the face models so faces and captions come up first. fp16 weights halve the download; detections
 // match fp32 (IoU >= 0.997), as on the server's fp16 CUDA path. small selects the S detector.
-async function initObjects({ small }) {
+async function initObjects({ small, size }) {
+  objectSize = size;
   const { session, progress, totals } = loader('objects');
   objectNames = JSON.parse(new TextDecoder().decode(await loadModel('yoloe-names.json', progress)));
   yoloe = await session(small ? 'yoloe-s.onnx' : 'yoloe-fp16w.onnx');
   dino = await session('dinov2-fp16w.onnx');
-  return { model: small ? 'S' : 'L', cached: progress.cached(), ...totals };
+  return { model: small ? 'S' : 'L', size: objectSize, cached: progress.cached(), ...totals };
 }
 
 // The server detects and aligns at full resolution. Instead of a full-frame pass, re-detect each face on a
@@ -140,7 +162,7 @@ async function objectFrame({ bitmap, width, height }) {
   let started = performance.now();
   const rgba = pixels(bitmap, [0, 0, width, height], width, height);
   bitmap.close();
-  const input = prepareYoloeInput(rgba, width, height);
+  const input = prepareYoloeInput(rgba, width, height, objectSize);
   timings.prepMs = performance.now() - started;
   started = performance.now();
   const outputs = await yoloe.run({ images: new ort.Tensor('float32', input.data, input.dims) });
@@ -149,14 +171,12 @@ async function objectFrame({ bitmap, width, height }) {
   started = performance.now();
   for (const object of found) object.quality = objectQuality(rgba, width, height, object);
   const accepted = found.filter(object => object.quality.accepted);
-  if (accepted.length) {
-    const size = 3 * DINO_SIZE * DINO_SIZE, batch = new Float32Array(accepted.length * size);
-    accepted.forEach((object, i) => batch.set(prepareDinoInput(rgba, width, height, object), i * size));
-    const { embedding } = await dino.run({ pixel_values: new ort.Tensor('float32', batch, [accepted.length, 3, DINO_SIZE, DINO_SIZE]) });
-    accepted.forEach((object, i) => {
-      const vector = dinoEmbedding(embedding.data, i);
-      object.identity = vector ? matchIdentity(vector, objects, objectThresholds) : { id: null };
-    });
+  // One crop per run: a fixed input shape lets every run reuse the same intermediate buffers.
+  for (const object of accepted) {
+    const input = prepareDinoInput(rgba, width, height, object);
+    const { embedding } = await dino.run({ pixel_values: new ort.Tensor('float32', input, [1, 3, DINO_SIZE, DINO_SIZE]) });
+    const vector = dinoEmbedding(embedding.data);
+    object.identity = vector ? matchIdentity(vector, objects, objectThresholds) : { id: null };
   }
   timings.embedMs = performance.now() - started;
   return { objects: found.map(({ x1, y1, x2, y2, score, label, quality, identity }) =>
@@ -200,8 +220,8 @@ const prototypes = (items, key) => items.filter(item => item[key]?.length).map(i
 
 async function handle(data) {
   try {
-    if (data.type === 'init') self.postMessage({ type: 'ready', ...(await init(data)) });
-    else if (data.type === 'objects-init') self.postMessage({ type: 'objects-ready', ...(await initObjects(data)) });
+    if (data.type === 'init') self.postMessage({ type: 'ready', ...(await init(data)), memory: memory() });
+    else if (data.type === 'objects-init') self.postMessage({ type: 'objects-ready', ...(await initObjects(data)), memory: memory() });
     else if (data.type === 'context') {
       candidates = prototypes(data.people, 'face');
       voices = prototypes(data.people, 'voice');
@@ -209,8 +229,8 @@ async function handle(data) {
       if (data.thresholds?.face) thresholds = data.thresholds.face;
       if (data.thresholds?.voice) voiceThresholds = data.thresholds.voice;
       if (data.thresholds?.object) objectThresholds = data.thresholds.object;
-    } else if (data.type === 'frame') self.postMessage({ type: 'result', ...(await frame(data)) });
-    else if (data.type === 'objects') self.postMessage({ type: 'objects-result', ...(await objectFrame(data)) });
+    } else if (data.type === 'frame') self.postMessage({ type: 'result', ...(await frame(data)), memory: memory() });
+    else if (data.type === 'objects') self.postMessage({ type: 'objects-result', ...(await objectFrame(data)), memory: memory() });
     else if (data.type === 'voice') self.postMessage({ type: 'voice', ...(await voice(data)) });
   } catch (error) {
     data.bitmap?.close?.();

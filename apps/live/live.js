@@ -4,13 +4,15 @@ const $ = id => document.getElementById(id);
 const CONTEXT_MS = 15_000;
 const EMBED_MS = 1_000;
 const OBJECT_MS = 1_000; // Minimum gap between object passes; a pass itself may take longer.
+const OBJECT_SIZE = 640;
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
 const params = new URLSearchParams(location.search);
-const BUILD = 'objects-4';
+const BUILD = 'objects-5';
 const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [], objectDetect: [], objectEmbed: [] };
 const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
 let worker, workerBusy = false, workerInfo = null, workerError = null, workerProgress = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
 let objectsRequested = false, objectBusy = false, objectInfo = null, objectError = null, objectProgress = null, lastObject = 0;
+let memory = null, objectPasses = 0, faceFrames = 0;
 let tracks = [], objectTracks = [], nextTrackId = 1, context = { people: [], objects: [], thresholds: null, at: 0, error: null };
 
 const loading = progress => !progress ? 'loading models' : progress.stage !== 'downloading' ? progress.stage
@@ -106,10 +108,32 @@ function draw() {
   }
 }
 
+// Crash report: the page keeps a small state snapshot in localStorage every second. If the tab dies (iOS kills it when
+// memory runs out), the reloaded page shows how long the last run lasted and what it was doing. Stays on the device.
+const RUN_KEY = 'live-run', startedAt = Date.now();
+const lastRun = (() => { try { return JSON.parse(localStorage.getItem(RUN_KEY)); } catch { return null; } })();
+const crashReport = lastRun && !lastRun.clean ? `last run ended unexpectedly after ${Math.round((lastRun.at - lastRun.startedAt) / 1000)}s `
+  + `(${lastRun.build}): ${lastRun.objectPasses} object passes${lastRun.objectInFlight ? ', one in flight' : ''}, ${lastRun.faceFrames} face frames, `
+  + `${lastRun.memory ? memoryLine(lastRun.memory, lastRun.asrMB) : 'no memory reading'}` : null;
+function asrHeapMB() { return (window.Module?.HEAPU8?.buffer.byteLength ?? 0) / 1e6; }
+function memoryLine(m, asrMB) {
+  return `gpu ${m.gpuMB.toFixed(0)}/${m.gpuPeakMB.toFixed(0)} MB peak · ort heap ${m.heapMB.toFixed(0)} MB · asr heap ${asrMB.toFixed(0)} MB`;
+}
+function saveRun(clean = false) {
+  if (!workerInfo && !clean) return;
+  try {
+    localStorage.setItem(RUN_KEY, JSON.stringify({ build: BUILD, startedAt, at: Date.now(), clean, objectPasses, faceFrames,
+      objectInFlight: objectBusy, memory, asrMB: asrHeapMB() }));
+  } catch { /* storage full or disabled */ }
+}
+addEventListener('pagehide', () => saveRun(true));
+
 function hud() {
   const asr = window.liveAsr;
   const seconds = (performance.now() - stats.since) / 1000;
+  saveRun();
   const lines = [
+    ...(crashReport && !workerInfo ? [crashReport] : []),
     `face: ${workerError ? `error ${workerError}` : workerInfo ? `${workerInfo.backend} threads=${workerInfo.threads} ${loaded(workerInfo)}` : loading(workerProgress)}`,
     `isolated=${crossOriginIsolated} webgpu=${'gpu' in navigator} cores=${navigator.hardwareConcurrency ?? '?'} video=${video.videoWidth}x${video.videoHeight}`,
     `detect ${average(stats.detect).toFixed(0)}ms read ${average(stats.read).toFixed(0)}ms · ${(stats.frames / seconds || 0).toFixed(1)} fps · embed ${average(stats.embed).toFixed(0)}ms`,
@@ -117,6 +141,7 @@ function hud() {
     `asr: ${asr?.state.status ?? 'missing'} rtf=${asr ? asr.rtf().toFixed(2) : '-'}`,
     `voice: ${workerInfo?.voiceBackend ?? '-'} ${context.people.filter(p => p.voice?.length).length} voiceprints · ${voiceSummary()}`,
     `objects: ${objectSummary()}`,
+    `mem: ${memory ? memoryLine(memory, asrHeapMB()) : `asr heap ${asrHeapMB().toFixed(0)} MB`}`,
     `build ${BUILD} · voice finals ${voiceCounts.finals} sent ${voiceCounts.sent} skipped ${voiceCounts.skipped} results ${voiceCounts.results}${asr?.state.utteranceError ? ` · error ${asr.state.utteranceError}` : ''}`,
   ];
   $('hud').textContent = lines.join('\n');
@@ -128,7 +153,7 @@ function objectSummary() {
   if (objectError) return `error ${objectError}`;
   if (!objectInfo) return workerInfo ? loading(objectProgress) : 'waiting for faces';
   const known = objectTracks.filter(item => winner(item.votes)).length;
-  return `${workerInfo.backend} ${objectInfo.model} ${loaded(objectInfo)} · ${context.objects.length} memories · `
+  return `${workerInfo.backend} ${objectInfo.model}@${objectInfo.size} ${loaded(objectInfo)} · ${context.objects.length} memories · `
     + `detect ${average(stats.objectDetect).toFixed(0)}ms embed ${average(stats.objectEmbed).toFixed(0)}ms · ${objectTracks.length} boxes, ${known} known`;
 }
 
@@ -186,7 +211,7 @@ async function pump() {
   draw();
   if (video.readyState < 2 || window.livePaused) return;
   pumpObjects();
-  if (!worker || workerBusy || !workerInfo) return;
+  if (!worker || workerBusy || !workerInfo || params.has('nofaces')) return;
   workerBusy = true;
   const embed = performance.now() - lastEmbed > EMBED_MS;
   if (embed) lastEmbed = performance.now();
@@ -242,19 +267,25 @@ function startWorker() {
   worker.onmessage = ({ data }) => {
     if (data.type === 'ready') {
       workerInfo = data;
+      memory = data.memory;
       refreshContext();
       if (!params.has('noobjects') && !objectsRequested) {
         objectsRequested = true;
-        worker.postMessage({ type: 'objects-init', small: params.get('objects') === 's' });
+        // ?objsize= sets the detector input (the server uses 640); smaller cuts activation memory and time.
+        worker.postMessage({ type: 'objects-init', small: params.get('objects') === 's', size: Number(params.get('objsize')) || OBJECT_SIZE });
       }
-    } else if (data.type === 'objects-ready') objectInfo = data;
+    } else if (data.type === 'objects-ready') { objectInfo = data; memory = data.memory; }
     else if (data.type === 'objects-result') {
       objectBusy = false;
+      objectPasses++;
+      memory = data.memory;
       push(stats.objectDetect, data.timings.detectMs);
       push(stats.objectEmbed, data.timings.embedMs);
       objectTracks = follow(objectTracks, data.objects, true);
     } else if (data.type === 'result') {
       workerBusy = false;
+      faceFrames++;
+      memory = data.memory;
       stats.frames++;
       push(stats.detect, data.timings.detectMs);
       push(stats.read, data.timings.readMs);
@@ -276,7 +307,7 @@ function startWorker() {
   // A worker that fails to load (module error, out of memory) never answers; surface it instead of loading forever.
   worker.onerror = event => { workerError = `worker: ${event.message || 'failed to load'}`; };
   worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), identity: !params.has('noid'),
-    voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu') });
+    voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu'), gpuCache: params.get('gpucache') || 'disabled' });
 }
 
 $('start').addEventListener('click', async () => {
