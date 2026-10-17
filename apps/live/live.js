@@ -100,24 +100,22 @@ function voiceSummary() {
 }
 
 // Long turns are matched against stored voiceprints (solid tag); short ones prefer speakers heard recently (dim tag).
+// Every sentence carries a tag so the voice state is visible: pending, too short, unknown with its best score, or a name.
 function speakerTag(speaker) {
-  if (!speaker || speaker.reason) return null;
+  if (!speaker) return { text: '…', className: 'speaker' };
+  if (speaker.reason) return { text: speaker.reason === 'short' ? 'short' : `voice ${speaker.reason}`, className: 'speaker' };
   if (speaker.id) return { text: speaker.name ?? '?', className: speaker.kind === 'match' ? 'speaker known' : 'speaker recent' };
-  return speaker.kind === 'match' ? { text: `unknown ${speaker.score?.toFixed(2) ?? ''}`, className: 'speaker' } : null;
+  return { text: `unknown ${speaker.score?.toFixed(2) ?? ''}`.trim(), className: 'speaker' };
 }
 
 function renderCaption(finals, partial) {
   $('final').replaceChildren(...finals.map(final => {
     const line = document.createElement('span');
     line.className = 'line';
-    const tag = speakerTag(final.speaker);
-    if (tag) {
-      const name = document.createElement('b');
-      name.className = tag.className;
-      name.textContent = tag.text;
-      line.append(name);
-    }
-    line.append(final.text);
+    const { text, className } = speakerTag(final.speaker), name = document.createElement('b');
+    name.className = className;
+    name.textContent = text;
+    line.append(name, final.text);
     return line;
   }));
   $('partial').textContent = partial;
