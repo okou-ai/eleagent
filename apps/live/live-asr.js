@@ -68,7 +68,8 @@
       if (text) {
         const final = { id: nextId++, text, speaker: null };
         state.finals = [...state.finals, final].slice(-3);
-        state.onUtterance(final, utterance);
+        // Speaker labelling must never stall the captions.
+        try { state.onUtterance(final, utterance); } catch (error) { state.utteranceError = String(error?.message ?? error); }
       }
       state.partial = '';
       recognizer.reset(stream);

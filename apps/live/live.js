@@ -4,7 +4,9 @@ const $ = id => document.getElementById(id);
 const CONTEXT_MS = 15_000;
 const EMBED_MS = 1_000;
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
+const BUILD = 'voice-2';
 const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [] };
+const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
 let worker, workerBusy = false, workerInfo = null, workerError = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
 let tracks = [], nextTrackId = 1, context = { people: [], at: 0, error: null };
 
@@ -87,6 +89,7 @@ function hud() {
     `context: ${context.error ? `error ${context.error}` : `${context.people.filter(p => p.face?.length).length}/${context.people.length} people with faces, ${context.at ? Math.round((Date.now() - context.at) / 1000) + 's ago' : 'pending'}`}`,
     `asr: ${asr?.state.status ?? 'missing'} rtf=${asr ? asr.rtf().toFixed(2) : '-'}`,
     `voice: ${workerInfo?.voiceBackend ?? '-'} ${context.people.filter(p => p.voice?.length).length} voiceprints · ${voiceSummary()}`,
+    `build ${BUILD} · finals ${voiceCounts.finals} sent ${voiceCounts.sent} skipped ${voiceCounts.skipped} results ${voiceCounts.results}${asr?.state.utteranceError ? ` · error ${asr.state.utteranceError}` : ''}`,
   ];
   $('hud').textContent = lines.join('\n');
   if (seconds > 5) { stats.frames = 0; stats.since = performance.now(); }
@@ -170,7 +173,10 @@ async function startAudio(media) {
   window.liveAsr.state.onText = renderCaption;
   // Each finished sentence goes to the worker for an on-device speaker embedding.
   window.liveAsr.state.onUtterance = (final, pcm) => {
-    if (workerInfo) worker.postMessage({ type: 'voice', id: final.id, pcm }, [pcm.buffer]);
+    voiceCounts.finals++;
+    if (!workerInfo) { voiceCounts.skipped++; final.speaker = { id: null, reason: 'not ready' }; return; }
+    worker.postMessage({ type: 'voice', id: final.id, pcm }, [pcm.buffer]);
+    voiceCounts.sent++;
   };
 }
 
@@ -186,6 +192,7 @@ function startWorker() {
       if (data.embed && data.faces.length) push(stats.embed, data.timings.embedMs / Math.min(4, data.faces.length));
       track(data.faces, data.embed);
     } else if (data.type === 'voice') {
+      voiceCounts.results++;
       lastVoice = data;
       if (data.voiceMs) push(stats.voice, data.voiceMs);
       window.liveAsr.setSpeaker(data.id, data.speaker);
