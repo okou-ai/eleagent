@@ -12,7 +12,9 @@
   let chunks = [], samples = 0, nextId = 1;
 
   window.Module = {
-    locateFile: path => `/live/assets/asr/${path}`,
+    // The -m192 build is the same wasm with its declared initial memory lowered from 512 MiB to 192 MiB (it grows on
+    // demand); 512 MiB up front leaves a phone too little room for the vision models.
+    locateFile: path => `/live/assets/asr/${path === 'sherpa-onnx-wasm-main-asr.wasm' ? 'sherpa-onnx-wasm-main-asr-m192.wasm' : path}`,
     setStatus(status) {
       const match = status.match(/Downloading data\.\.\. \((\d+)\/(\d+)\)/);
       if (match) state.status = `downloading ${Math.round(Number(match[1]) / Number(match[2]) * 100)}%`;

@@ -6,11 +6,11 @@ const EMBED_MS = 1_000;
 const OBJECT_MS = 1_000; // Minimum gap between object passes; a pass itself may take longer.
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
 const params = new URLSearchParams(location.search);
-const BUILD = 'objects-3';
+const BUILD = 'objects-4';
 const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [], objectDetect: [], objectEmbed: [] };
 const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
 let worker, workerBusy = false, workerInfo = null, workerError = null, workerProgress = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
-let objectWorker, objectBusy = false, objectInfo = null, objectError = null, objectProgress = null, lastObject = 0;
+let objectsRequested = false, objectBusy = false, objectInfo = null, objectError = null, objectProgress = null, lastObject = 0;
 let tracks = [], objectTracks = [], nextTrackId = 1, context = { people: [], objects: [], thresholds: null, at: 0, error: null };
 
 const loading = progress => !progress ? 'loading models' : progress.stage !== 'downloading' ? progress.stage
@@ -128,7 +128,7 @@ function objectSummary() {
   if (objectError) return `error ${objectError}`;
   if (!objectInfo) return workerInfo ? loading(objectProgress) : 'waiting for faces';
   const known = objectTracks.filter(item => winner(item.votes)).length;
-  return `${objectInfo.backend} ${objectInfo.model} ${loaded(objectInfo)} · ${context.objects.length} memories · `
+  return `${workerInfo.backend} ${objectInfo.model} ${loaded(objectInfo)} · ${context.objects.length} memories · `
     + `detect ${average(stats.objectDetect).toFixed(0)}ms embed ${average(stats.objectEmbed).toFixed(0)}ms · ${objectTracks.length} boxes, ${known} known`;
 }
 
@@ -167,8 +167,7 @@ async function refreshContext() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
     context = { people: body.people ?? [], objects: body.objects ?? [], thresholds: body.thresholds, at: Date.now(), error: null };
-    worker?.postMessage({ type: 'context', people: context.people, thresholds: body.thresholds });
-    objectWorker?.postMessage({ type: 'context', objects: context.objects, thresholds: body.thresholds });
+    worker?.postMessage({ type: 'context', people: context.people, objects: context.objects, thresholds: body.thresholds });
   } catch (error) { context.error = error.message; }
 }
 
@@ -178,7 +177,7 @@ async function pumpObjects() {
   lastObject = performance.now();
   try {
     const bitmap = await createImageBitmap(video);
-    objectWorker.postMessage({ type: 'frame', bitmap, width: video.videoWidth, height: video.videoHeight }, [bitmap]);
+    worker.postMessage({ type: 'objects', bitmap, width: video.videoWidth, height: video.videoHeight }, [bitmap]);
   } catch { objectBusy = false; }
 }
 
@@ -236,32 +235,25 @@ const threadCount = () => {
   return !crossOriginIsolated ? 1 : requested > 0 ? Math.min(requested, 8) : Math.min(4, navigator.hardwareConcurrency || 2);
 };
 
-// Started once the face models are loaded, so the two downloads do not compete. ?objects=s uses the small detector.
-function startObjectWorker() {
-  if (params.has('noobjects') || objectWorker) return;
-  objectWorker = new Worker('/live/object-worker.js', { type: 'module' });
-  objectWorker.onmessage = ({ data }) => {
+// One worker runs every model (one onnxruntime instance and heap). Object models load after the face models, so faces
+// and captions come up first. ?objects=s uses the small detector; ?noobjects skips objects.
+function startWorker() {
+  worker = new Worker('/live/live-worker.js', { type: 'module' });
+  worker.onmessage = ({ data }) => {
     if (data.type === 'ready') {
-      objectInfo = data;
-      objectWorker.postMessage({ type: 'context', objects: context.objects, thresholds: context.thresholds });
-    } else if (data.type === 'result') {
+      workerInfo = data;
+      refreshContext();
+      if (!params.has('noobjects') && !objectsRequested) {
+        objectsRequested = true;
+        worker.postMessage({ type: 'objects-init', small: params.get('objects') === 's' });
+      }
+    } else if (data.type === 'objects-ready') objectInfo = data;
+    else if (data.type === 'objects-result') {
       objectBusy = false;
       push(stats.objectDetect, data.timings.detectMs);
       push(stats.objectEmbed, data.timings.embedMs);
       objectTracks = follow(objectTracks, data.objects, true);
-    } else if (data.type === 'progress') objectProgress = data;
-    else if (data.type === 'error') { objectBusy = false; objectError = `${data.stage}: ${data.message}`; }
-  };
-  // A worker that fails to load (module error, out of memory) never answers; surface it instead of loading forever.
-  objectWorker.onerror = event => { objectError = `worker: ${event.message || 'failed to load'}`; };
-  objectWorker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), small: params.get('objects') === 's' });
-}
-
-function startWorker() {
-  worker = new Worker('/live/face-worker.js', { type: 'module' });
-  worker.onmessage = ({ data }) => {
-    if (data.type === 'ready') { workerInfo = data; refreshContext(); startObjectWorker(); }
-    else if (data.type === 'result') {
+    } else if (data.type === 'result') {
       workerBusy = false;
       stats.frames++;
       push(stats.detect, data.timings.detectMs);
@@ -273,12 +265,15 @@ function startWorker() {
       lastVoice = data;
       if (data.voiceMs) push(stats.voice, data.voiceMs);
       window.liveAsr.setSpeaker(data.id, data.speaker);
-    } else if (data.type === 'progress') workerProgress = data;
-    else if (data.type === 'error') {
-      if (data.stage !== 'voice') workerBusy = false;
+    } else if (data.type === 'progress') {
+      if (data.scope === 'objects') objectProgress = data; else workerProgress = data;
+    } else if (data.type === 'error') {
+      if (data.stage.startsWith('objects')) { objectBusy = false; objectError = `${data.stage}: ${data.message}`; return; }
+      if (data.stage === 'frame') workerBusy = false;
       workerError = `${data.stage}: ${data.message}`;
     }
   };
+  // A worker that fails to load (module error, out of memory) never answers; surface it instead of loading forever.
   worker.onerror = event => { workerError = `worker: ${event.message || 'failed to load'}`; };
   worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), identity: !params.has('noid'),
     voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu') });
@@ -301,7 +296,7 @@ $('start').addEventListener('click', async () => {
 $('flip').addEventListener('click', () => { camera = camera === 'user' ? 'environment' : 'user'; openCamera(); });
 // Read-only snapshot for automated checks and remote debugging.
 window.liveDebug = () => ({ worker: workerInfo, error: workerError, context: { people: context.people.length, objects: context.objects.length, error: context.error },
-  objectWorker: objectInfo, objectError,
+  objectInfo, objectError,
   objects: objectTracks.map(item => ({ box: { x: Math.round(item.box.x), y: Math.round(item.box.y), w: Math.round(item.box.w), h: Math.round(item.box.h) },
     label: item.box.label, reason: item.box.reason, name: winner(item.votes), score: item.score })),
   tracks: tracks.map(item => ({ box: item.box && { x: Math.round(item.box.x), y: Math.round(item.box.y), w: Math.round(item.box.w), h: Math.round(item.box.h) }, label: label(item), score: item.score })),
