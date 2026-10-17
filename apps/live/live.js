@@ -1,14 +1,17 @@
-// Live annotation spike: on-device face boxes with names and streaming captions labelled with the speaker.
+// Live annotation spike: on-device face and object boxes with names, and streaming captions labelled with the speaker.
 // The only server call is the candidate feature pack (/v1/live/context); frames and audio stay on the device.
 const $ = id => document.getElementById(id);
 const CONTEXT_MS = 15_000;
 const EMBED_MS = 1_000;
+const OBJECT_MS = 1_000; // Minimum gap between object passes; a pass itself may take longer.
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
-const BUILD = 'voice-2';
-const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [] };
+const params = new URLSearchParams(location.search);
+const BUILD = 'objects-1';
+const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [], objectDetect: [], objectEmbed: [] };
 const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
 let worker, workerBusy = false, workerInfo = null, workerError = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
-let tracks = [], nextTrackId = 1, context = { people: [], at: 0, error: null };
+let objectWorker, objectBusy = false, objectInfo = null, objectError = null, lastObject = 0;
+let tracks = [], objectTracks = [], nextTrackId = 1, context = { people: [], objects: [], thresholds: null, at: 0, error: null };
 
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
 const push = (list, value) => { list.push(value); if (list.length > 30) list.shift(); };
@@ -20,36 +23,48 @@ function iou(a, b) {
   return inter / (a.w * a.h + b.w * b.h - inter || 1);
 }
 
-// Greedy IoU tracking keeps a name on a face between the once-a-second identity passes.
-function track(faces, embed) {
+// Greedy IoU tracking keeps a name on a face or object between identity passes.
+function follow(previous, boxes, voting) {
   const next = [];
-  for (const face of faces) {
+  for (const box of boxes) {
     let best = null, bestIou = 0.3;
-    for (const candidate of tracks) {
-      const overlap = iou(face, candidate.box);
+    for (const candidate of previous) {
+      const overlap = iou(box, candidate.box);
       if (overlap > bestIou && !next.includes(candidate)) { best = candidate; bestIou = overlap; }
     }
     const current = best ?? { id: nextTrackId++, votes: [] };
-    current.box = face;
-    if (embed && face.identity) {
-      current.votes = [...current.votes, face.identity].slice(-3);
-      current.score = face.identity.score;
+    current.box = box;
+    if (voting && box.identity) {
+      current.votes = [...current.votes, box.identity].slice(-3);
+      current.score = box.identity.score;
     }
     next.push(current);
   }
-  tracks = next;
+  return next;
 }
 
 // A name is shown once it wins at least two of the last three identity passes.
-function label(trackItem) {
+function winner(votes) {
   const counts = new Map();
-  for (const vote of trackItem.votes) if (vote.id) counts.set(vote.id, { name: vote.name, n: (counts.get(vote.id)?.n ?? 0) + 1 });
-  const winner = [...counts.values()].sort((a, b) => b.n - a.n)[0];
-  if (winner && winner.n >= Math.min(2, trackItem.votes.length)) return winner.name;
+  for (const vote of votes) if (vote.id) counts.set(vote.id, { name: vote.name, n: (counts.get(vote.id)?.n ?? 0) + 1 });
+  const best = [...counts.values()].sort((a, b) => b.n - a.n)[0];
+  return best && best.n >= Math.min(2, votes.length) ? best.name : null;
+}
+
+function label(trackItem) {
+  const name = winner(trackItem.votes);
+  if (name) return name;
   const last = trackItem.votes.at(-1);
   if (last?.reason === 'small') return 'too small';
   return trackItem.votes.length ? `unknown ${trackItem.score?.toFixed(2) ?? ''}` : '…';
 }
+
+const STYLES = {
+  face: { stroke: '#30d158', fill: 'rgba(48,209,88,.85)', font: '600 14px' },
+  object: { stroke: '#ff9f0a', fill: 'rgba(255,159,10,.9)', font: '600 13px' },
+  unknown: { stroke: 'rgba(255,255,255,.8)', fill: 'rgba(28,28,30,.7)', font: '600 14px' },
+  proposal: { stroke: 'rgba(255,255,255,.35)', fill: 'rgba(28,28,30,.55)', font: '500 12px' },
+};
 
 function draw() {
   const width = overlay.clientWidth, height = overlay.clientHeight, ratio = devicePixelRatio || 1;
@@ -60,22 +75,30 @@ function draw() {
   if (!vw) return;
   // object-fit: cover mapping, mirrored for the front camera to match the preview.
   const scale = Math.max(width / vw, height / vh), dx = (width - vw * scale) / 2, dy = (height - vh * scale) / 2;
-  ctx.lineWidth = 2;
-  ctx.font = '600 14px -apple-system, system-ui, sans-serif';
-  for (const item of tracks) {
-    const { x, y, w, h } = item.box;
+  const box = ({ x, y, w, h }, text, style) => {
     let left = dx + x * scale;
     if (camera === 'user') left = width - left - w * scale;
-    const top = dy + y * scale, text = label(item), known = !/^(unknown|…|too small)/.test(text);
-    ctx.strokeStyle = known ? '#30d158' : 'rgba(255,255,255,.8)';
+    const top = dy + y * scale;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = style.stroke;
     ctx.strokeRect(left, top, w * scale, h * scale);
+    ctx.font = `${style.font} -apple-system, system-ui, sans-serif`;
     const textWidth = ctx.measureText(text).width + 12;
-    ctx.fillStyle = known ? 'rgba(48,209,88,.85)' : 'rgba(28,28,30,.7)';
-    // Keep the name tag inside the view even when the face touches an edge.
+    ctx.fillStyle = style.fill;
+    // Keep the name tag inside the view even when the box touches an edge.
     const tagX = Math.min(Math.max(left, 0), width - textWidth), tagY = Math.max(top - 22, 0);
     ctx.fillRect(tagX, tagY, textWidth, 20);
     ctx.fillStyle = '#fff';
     ctx.fillText(text, tagX + 6, tagY + 15);
+  };
+  // Objects first so faces stay on top. Unrecognized objects keep their detector label.
+  for (const item of objectTracks) {
+    const name = winner(item.votes);
+    box(item.box, name ?? item.box.label, name ? STYLES.object : STYLES.proposal);
+  }
+  for (const item of tracks) {
+    const text = label(item);
+    box(item.box, text, /^(unknown|…|too small)/.test(text) ? STYLES.unknown : STYLES.face);
   }
 }
 
@@ -89,10 +112,20 @@ function hud() {
     `context: ${context.error ? `error ${context.error}` : `${context.people.filter(p => p.face?.length).length}/${context.people.length} people with faces, ${context.at ? Math.round((Date.now() - context.at) / 1000) + 's ago' : 'pending'}`}`,
     `asr: ${asr?.state.status ?? 'missing'} rtf=${asr ? asr.rtf().toFixed(2) : '-'}`,
     `voice: ${workerInfo?.voiceBackend ?? '-'} ${context.people.filter(p => p.voice?.length).length} voiceprints · ${voiceSummary()}`,
-    `build ${BUILD} · finals ${voiceCounts.finals} sent ${voiceCounts.sent} skipped ${voiceCounts.skipped} results ${voiceCounts.results}${asr?.state.utteranceError ? ` · error ${asr.state.utteranceError}` : ''}`,
+    `objects: ${objectSummary()}`,
+    `build ${BUILD} · voice finals ${voiceCounts.finals} sent ${voiceCounts.sent} skipped ${voiceCounts.skipped} results ${voiceCounts.results}${asr?.state.utteranceError ? ` · error ${asr.state.utteranceError}` : ''}`,
   ];
   $('hud').textContent = lines.join('\n');
   if (seconds > 5) { stats.frames = 0; stats.since = performance.now(); }
+}
+
+function objectSummary() {
+  if (params.has('noobjects')) return 'off';
+  if (objectError) return `error ${objectError}`;
+  if (!objectInfo) return workerInfo ? 'loading models' : 'waiting for faces';
+  const known = objectTracks.filter(item => winner(item.votes)).length;
+  return `${objectInfo.backend} ${objectInfo.model} load=${Math.round(objectInfo.downloadMs)}+${Math.round(objectInfo.sessionMs)}ms · ${context.objects.length} memories · `
+    + `detect ${average(stats.objectDetect).toFixed(0)}ms embed ${average(stats.objectEmbed).toFixed(0)}ms · ${objectTracks.length} boxes, ${known} known`;
 }
 
 function voiceSummary() {
@@ -129,15 +162,28 @@ async function refreshContext() {
     const response = await fetch('/v1/live/context', { cache: 'no-store', credentials: 'same-origin' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json();
-    context = { people: body.people ?? [], at: Date.now(), error: null };
+    context = { people: body.people ?? [], objects: body.objects ?? [], thresholds: body.thresholds, at: Date.now(), error: null };
     worker?.postMessage({ type: 'context', people: context.people, thresholds: body.thresholds });
+    objectWorker?.postMessage({ type: 'context', objects: context.objects, thresholds: body.thresholds });
   } catch (error) { context.error = error.message; }
+}
+
+async function pumpObjects() {
+  if (!objectInfo || objectBusy || performance.now() - lastObject < OBJECT_MS) return;
+  objectBusy = true;
+  lastObject = performance.now();
+  try {
+    const bitmap = await createImageBitmap(video);
+    objectWorker.postMessage({ type: 'frame', bitmap, width: video.videoWidth, height: video.videoHeight }, [bitmap]);
+  } catch { objectBusy = false; }
 }
 
 async function pump() {
   requestAnimationFrame(pump);
   draw();
-  if (!worker || workerBusy || !workerInfo || video.readyState < 2 || window.livePaused) return;
+  if (video.readyState < 2 || window.livePaused) return;
+  pumpObjects();
+  if (!worker || workerBusy || !workerInfo) return;
   workerBusy = true;
   const embed = performance.now() - lastEmbed > EMBED_MS;
   if (embed) lastEmbed = performance.now();
@@ -157,6 +203,7 @@ async function openCamera(media) {
   video.classList.toggle('mirrored', camera === 'user');
   stream = media;
   tracks = [];
+  objectTracks = [];
   await video.play().catch(() => {});
 }
 
@@ -180,17 +227,40 @@ async function startAudio(media) {
   };
 }
 
+const threadCount = () => {
+  const requested = Number(params.get('threads'));
+  return !crossOriginIsolated ? 1 : requested > 0 ? Math.min(requested, 8) : Math.min(4, navigator.hardwareConcurrency || 2);
+};
+
+// Started once the face models are loaded, so the two downloads do not compete. ?objects=s uses the small detector.
+function startObjectWorker() {
+  if (params.has('noobjects') || objectWorker) return;
+  objectWorker = new Worker('/live/object-worker.js', { type: 'module' });
+  objectWorker.onmessage = ({ data }) => {
+    if (data.type === 'ready') {
+      objectInfo = data;
+      objectWorker.postMessage({ type: 'context', objects: context.objects, thresholds: context.thresholds });
+    } else if (data.type === 'result') {
+      objectBusy = false;
+      push(stats.objectDetect, data.timings.detectMs);
+      push(stats.objectEmbed, data.timings.embedMs);
+      objectTracks = follow(objectTracks, data.objects, true);
+    } else if (data.type === 'error') { objectBusy = false; objectError = `${data.stage}: ${data.message}`; }
+  };
+  objectWorker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), small: params.get('objects') === 's' });
+}
+
 function startWorker() {
   worker = new Worker('/live/face-worker.js', { type: 'module' });
   worker.onmessage = ({ data }) => {
-    if (data.type === 'ready') { workerInfo = data; refreshContext(); }
+    if (data.type === 'ready') { workerInfo = data; refreshContext(); startObjectWorker(); }
     else if (data.type === 'result') {
       workerBusy = false;
       stats.frames++;
       push(stats.detect, data.timings.detectMs);
       push(stats.read, data.timings.readMs);
       if (data.embed && data.faces.length) push(stats.embed, data.timings.embedMs / Math.min(4, data.faces.length));
-      track(data.faces, data.embed);
+      tracks = follow(tracks, data.faces, data.embed);
     } else if (data.type === 'voice') {
       voiceCounts.results++;
       lastVoice = data;
@@ -201,10 +271,7 @@ function startWorker() {
       workerError = `${data.stage}: ${data.message}`;
     }
   };
-  const requested = Number(new URLSearchParams(location.search).get('threads'));
-  const threads = !crossOriginIsolated ? 1 : requested > 0 ? Math.min(requested, 8) : Math.min(4, navigator.hardwareConcurrency || 2);
-  const params = new URLSearchParams(location.search);
-  worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads, identity: !params.has('noid'),
+  worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), identity: !params.has('noid'),
     voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu') });
 }
 
@@ -224,11 +291,15 @@ $('start').addEventListener('click', async () => {
 });
 $('flip').addEventListener('click', () => { camera = camera === 'user' ? 'environment' : 'user'; openCamera(); });
 // Read-only snapshot for automated checks and remote debugging.
-window.liveDebug = () => ({ worker: workerInfo, error: workerError, context: { people: context.people.length, error: context.error },
+window.liveDebug = () => ({ worker: workerInfo, error: workerError, context: { people: context.people.length, objects: context.objects.length, error: context.error },
+  objectWorker: objectInfo, objectError,
+  objects: objectTracks.map(item => ({ box: { x: Math.round(item.box.x), y: Math.round(item.box.y), w: Math.round(item.box.w), h: Math.round(item.box.h) },
+    label: item.box.label, reason: item.box.reason, name: winner(item.votes), score: item.score })),
   tracks: tracks.map(item => ({ box: item.box && { x: Math.round(item.box.x), y: Math.round(item.box.y), w: Math.round(item.box.w), h: Math.round(item.box.h) }, label: label(item), score: item.score })),
   caption: { finals: window.liveAsr?.state.finals, partial: window.liveAsr?.state.partial, status: window.liveAsr?.state.status, rtf: window.liveAsr?.rtf() },
   voice: lastVoice && { seconds: lastVoice.seconds, voiceMs: lastVoice.voiceMs, speaker: lastVoice.speaker },
-  timings: { detect: average(stats.detect), embed: average(stats.embed), read: average(stats.read), voice: average(stats.voice) } });
+  timings: { detect: average(stats.detect), embed: average(stats.embed), read: average(stats.read), voice: average(stats.voice),
+    objectDetect: average(stats.objectDetect), objectEmbed: average(stats.objectEmbed) } });
 setInterval(refreshContext, CONTEXT_MS);
 setInterval(hud, 500);
 requestAnimationFrame(pump);

@@ -22,7 +22,14 @@ async function fixture(t) {
     { id: 'person:owner', name: 'Owner', face, voice },
     { id: 'person:partial', name: null, face: [1, 2, 3], voice: null },
   ].map(row => ({ get: key => row[key] }));
-  const store = { read: async callback => callback({ run: async () => ({ records }) }) };
+  const object = Array.from({ length: 384 }, (_, i) => (i % 2 ? 2 : 0));
+  const objects = [
+    { id: 'object:watch', name: 'Watch', object },
+    { id: 'object:legacy', name: null, object: JSON.stringify(object) },
+    { id: 'object:short', name: 'Short', object: [1, 2, 3] },
+    { id: 'object:zero', name: 'Zero', object: Array(384).fill(0) },
+  ].map(row => ({ get: key => row[key] }));
+  const store = { read: async callback => callback({ run: async query => ({ records: query.includes('object_vec') ? objects : records }) }) };
   const listener = http.createServer(); listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const origin = `http://127.0.0.1:${listener.address().port}`;
   const authService = { getOwnerSession: async headers => headers.get('cookie') === 'session=owner' ? { user: { id: 'owner' } } : null };
@@ -76,4 +83,17 @@ test('feature pack carries names and well-formed vectors only', async t => {
   assert.equal(body.people[0].voice[0].length, 192);
   assert.deepEqual(body.people[1].face, []);
   assert.deepEqual(body.people[1].voice, []);
+});
+
+test('feature pack carries memory objects with unit 384-d vectors', async t => {
+  const f = await fixture(t);
+  const body = await (await f.get('/v1/live/context')).json();
+  assert.deepEqual(body.thresholds.object, { threshold: 0.65, margin: 0.1 });
+  assert.deepEqual(body.objects.map(item => [item.id, item.name]), [['object:watch', 'Watch'], ['object:legacy', null]]);
+  for (const item of body.objects) {
+    assert.equal(item.object.length, 1);
+    assert.equal(item.object[0].length, 384);
+    assert.ok(Math.abs(Math.hypot(...item.object[0]) - 1) < 1e-9);
+    assert.ok(item.object[0][0] === 0 && Math.abs(item.object[0][1] - Math.sqrt(1 / 192)) < 1e-12);
+  }
 });
