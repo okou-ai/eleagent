@@ -1,11 +1,11 @@
-// Live annotation spike: on-device face boxes with names and streaming captions.
+// Live annotation spike: on-device face boxes with names and streaming captions labelled with the speaker.
 // The only server call is the candidate feature pack (/v1/live/context); frames and audio stay on the device.
 const $ = id => document.getElementById(id);
 const CONTEXT_MS = 15_000;
 const EMBED_MS = 1_000;
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
-const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [] };
-let worker, workerBusy = false, workerInfo = null, workerError = null, camera = 'user', stream, lastEmbed = 0;
+const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [] };
+let worker, workerBusy = false, workerInfo = null, workerError = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
 let tracks = [], nextTrackId = 1, context = { people: [], at: 0, error: null };
 
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
@@ -86,9 +86,41 @@ function hud() {
     `detect ${average(stats.detect).toFixed(0)}ms read ${average(stats.read).toFixed(0)}ms · ${(stats.frames / seconds || 0).toFixed(1)} fps · embed ${average(stats.embed).toFixed(0)}ms`,
     `context: ${context.error ? `error ${context.error}` : `${context.people.filter(p => p.face?.length).length}/${context.people.length} people with faces, ${context.at ? Math.round((Date.now() - context.at) / 1000) + 's ago' : 'pending'}`}`,
     `asr: ${asr?.state.status ?? 'missing'} rtf=${asr ? asr.rtf().toFixed(2) : '-'}`,
+    `voice: ${workerInfo?.voiceBackend ?? '-'} ${context.people.filter(p => p.voice?.length).length} voiceprints · ${voiceSummary()}`,
   ];
   $('hud').textContent = lines.join('\n');
   if (seconds > 5) { stats.frames = 0; stats.since = performance.now(); }
+}
+
+function voiceSummary() {
+  if (!lastVoice) return 'waiting for a sentence';
+  const { seconds, voiceMs, speaker } = lastVoice;
+  const who = speaker.reason ?? `${speaker.name ?? 'unknown'} ${speaker.score?.toFixed(2) ?? ''}${speaker.second == null ? '' : `/${speaker.second.toFixed(2)}`} ${speaker.kind}`;
+  return `last ${seconds.toFixed(1)}s speech → ${who}${voiceMs ? ` · ${Math.round(voiceMs)}ms (avg ${Math.round(average(stats.voice))})` : ''}`;
+}
+
+// Long turns are matched against stored voiceprints (solid tag); short ones prefer speakers heard recently (dim tag).
+function speakerTag(speaker) {
+  if (!speaker || speaker.reason) return null;
+  if (speaker.id) return { text: speaker.name ?? '?', className: speaker.kind === 'match' ? 'speaker known' : 'speaker recent' };
+  return speaker.kind === 'match' ? { text: `unknown ${speaker.score?.toFixed(2) ?? ''}`, className: 'speaker' } : null;
+}
+
+function renderCaption(finals, partial) {
+  $('final').replaceChildren(...finals.map(final => {
+    const line = document.createElement('span');
+    line.className = 'line';
+    const tag = speakerTag(final.speaker);
+    if (tag) {
+      const name = document.createElement('b');
+      name.className = tag.className;
+      name.textContent = tag.text;
+      line.append(name);
+    }
+    line.append(final.text);
+    return line;
+  }));
+  $('partial').textContent = partial;
 }
 
 async function refreshContext() {
@@ -104,7 +136,7 @@ async function refreshContext() {
 async function pump() {
   requestAnimationFrame(pump);
   draw();
-  if (!worker || workerBusy || !workerInfo || video.readyState < 2) return;
+  if (!worker || workerBusy || !workerInfo || video.readyState < 2 || window.livePaused) return;
   workerBusy = true;
   const embed = performance.now() - lastEmbed > EMBED_MS;
   if (embed) lastEmbed = performance.now();
@@ -137,9 +169,10 @@ async function startAudio(media) {
   processor.onaudioprocess = event => window.liveAsr.feed(Float32Array.from(event.inputBuffer.getChannelData(0)), audio.sampleRate);
   source.connect(processor);
   processor.connect(audio.destination);
-  window.liveAsr.state.onText = (finals, partial) => {
-    $('final').textContent = finals.join(' ') + (finals.length && partial ? ' ' : '');
-    $('partial').textContent = partial;
+  window.liveAsr.state.onText = renderCaption;
+  // Each finished sentence goes to the worker for an on-device speaker embedding.
+  window.liveAsr.state.onUtterance = (final, pcm) => {
+    if (workerInfo) worker.postMessage({ type: 'voice', id: final.id, pcm }, [pcm.buffer]);
   };
 }
 
@@ -154,10 +187,20 @@ function startWorker() {
       push(stats.read, data.timings.readMs);
       if (data.embed && data.faces.length) push(stats.embed, data.timings.embedMs / Math.min(4, data.faces.length));
       track(data.faces, data.embed);
-    } else if (data.type === 'error') { workerBusy = false; workerError = `${data.stage}: ${data.message}`; }
+    } else if (data.type === 'voice') {
+      lastVoice = data;
+      if (data.voiceMs) push(stats.voice, data.voiceMs);
+      window.liveAsr.setSpeaker(data.id, data.speaker);
+    } else if (data.type === 'error') {
+      if (data.stage !== 'voice') workerBusy = false;
+      workerError = `${data.stage}: ${data.message}`;
+    }
   };
-  const threads = crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1;
-  worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !new URLSearchParams(location.search).has('wasm'), threads });
+  const requested = Number(new URLSearchParams(location.search).get('threads'));
+  const threads = !crossOriginIsolated ? 1 : requested > 0 ? Math.min(requested, 8) : Math.min(4, navigator.hardwareConcurrency || 2);
+  const params = new URLSearchParams(location.search);
+  worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads, identity: !params.has('noid'),
+    voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu') });
 }
 
 $('start').addEventListener('click', async () => {
@@ -179,7 +222,8 @@ $('flip').addEventListener('click', () => { camera = camera === 'user' ? 'enviro
 window.liveDebug = () => ({ worker: workerInfo, error: workerError, context: { people: context.people.length, error: context.error },
   tracks: tracks.map(item => ({ box: item.box && { x: Math.round(item.box.x), y: Math.round(item.box.y), w: Math.round(item.box.w), h: Math.round(item.box.h) }, label: label(item), score: item.score })),
   caption: { finals: window.liveAsr?.state.finals, partial: window.liveAsr?.state.partial, status: window.liveAsr?.state.status, rtf: window.liveAsr?.rtf() },
-  timings: { detect: average(stats.detect), embed: average(stats.embed), read: average(stats.read) } });
+  voice: lastVoice && { seconds: lastVoice.seconds, voiceMs: lastVoice.voiceMs, speaker: lastVoice.speaker },
+  timings: { detect: average(stats.detect), embed: average(stats.embed), read: average(stats.read), voice: average(stats.voice) } });
 setInterval(refreshContext, CONTEXT_MS);
 setInterval(hud, 500);
 requestAnimationFrame(pump);

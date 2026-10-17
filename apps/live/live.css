@@ -20,6 +20,10 @@ video.mirrored { transform: scaleX(-1); }
 }
 .caption:empty, .caption:has(span:empty + span:empty) { display: none; }
 #partial { color: rgba(235, 235, 245, .6); }
+#final .line { display: block; }
+.speaker { margin-right: 6px; padding: 1px 6px; border-radius: 6px; font-size: 13px; font-weight: 600; background: rgba(120, 120, 128, .5); }
+.speaker.known { background: rgba(48, 209, 88, .85); }
+.speaker.recent { background: rgba(48, 209, 88, .45); }
 .controls {
   position: absolute; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
   padding: 24px 24px calc(env(safe-area-inset-bottom) + 24px);
