@@ -6,13 +6,17 @@ const EMBED_MS = 1_000;
 const OBJECT_MS = 1_000; // Minimum gap between object passes; a pass itself may take longer.
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
 const params = new URLSearchParams(location.search);
-const BUILD = 'objects-1';
+const BUILD = 'objects-2';
 const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [], objectDetect: [], objectEmbed: [] };
 const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
-let worker, workerBusy = false, workerInfo = null, workerError = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
-let objectWorker, objectBusy = false, objectInfo = null, objectError = null, lastObject = 0;
+let worker, workerBusy = false, workerInfo = null, workerError = null, workerProgress = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
+let objectWorker, objectBusy = false, objectInfo = null, objectError = null, objectProgress = null, lastObject = 0;
 let tracks = [], objectTracks = [], nextTrackId = 1, context = { people: [], objects: [], thresholds: null, at: 0, error: null };
 
+const loading = progress => !progress ? 'loading models' : progress.stage !== 'downloading' ? progress.stage
+  : `downloading ${(progress.loaded / 1e6).toFixed(0)}/${progress.total ? (progress.total / 1e6).toFixed(0) : '?'} MB`
+    + (progress.total ? ` (${Math.round(progress.loaded / progress.total * 100)}%)` : '');
+const loaded = info => `load=${Math.round(info.downloadMs)}+${Math.round(info.sessionMs)}ms${info.cached ? ' (cached)' : ''}`;
 const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
 const push = (list, value) => { list.push(value); if (list.length > 30) list.shift(); };
 
@@ -106,7 +110,7 @@ function hud() {
   const asr = window.liveAsr;
   const seconds = (performance.now() - stats.since) / 1000;
   const lines = [
-    `face: ${workerError ? `error ${workerError}` : workerInfo ? `${workerInfo.backend} threads=${workerInfo.threads} load=${Math.round(workerInfo.downloadMs)}+${Math.round(workerInfo.sessionMs)}ms` : 'loading models'}`,
+    `face: ${workerError ? `error ${workerError}` : workerInfo ? `${workerInfo.backend} threads=${workerInfo.threads} ${loaded(workerInfo)}` : loading(workerProgress)}`,
     `isolated=${crossOriginIsolated} webgpu=${'gpu' in navigator} cores=${navigator.hardwareConcurrency ?? '?'} video=${video.videoWidth}x${video.videoHeight}`,
     `detect ${average(stats.detect).toFixed(0)}ms read ${average(stats.read).toFixed(0)}ms · ${(stats.frames / seconds || 0).toFixed(1)} fps · embed ${average(stats.embed).toFixed(0)}ms`,
     `context: ${context.error ? `error ${context.error}` : `${context.people.filter(p => p.face?.length).length}/${context.people.length} people with faces, ${context.at ? Math.round((Date.now() - context.at) / 1000) + 's ago' : 'pending'}`}`,
@@ -122,9 +126,9 @@ function hud() {
 function objectSummary() {
   if (params.has('noobjects')) return 'off';
   if (objectError) return `error ${objectError}`;
-  if (!objectInfo) return workerInfo ? 'loading models' : 'waiting for faces';
+  if (!objectInfo) return workerInfo ? loading(objectProgress) : 'waiting for faces';
   const known = objectTracks.filter(item => winner(item.votes)).length;
-  return `${objectInfo.backend} ${objectInfo.model} load=${Math.round(objectInfo.downloadMs)}+${Math.round(objectInfo.sessionMs)}ms · ${context.objects.length} memories · `
+  return `${objectInfo.backend} ${objectInfo.model} ${loaded(objectInfo)} · ${context.objects.length} memories · `
     + `detect ${average(stats.objectDetect).toFixed(0)}ms embed ${average(stats.objectEmbed).toFixed(0)}ms · ${objectTracks.length} boxes, ${known} known`;
 }
 
@@ -245,8 +249,11 @@ function startObjectWorker() {
       push(stats.objectDetect, data.timings.detectMs);
       push(stats.objectEmbed, data.timings.embedMs);
       objectTracks = follow(objectTracks, data.objects, true);
-    } else if (data.type === 'error') { objectBusy = false; objectError = `${data.stage}: ${data.message}`; }
+    } else if (data.type === 'progress') objectProgress = data;
+    else if (data.type === 'error') { objectBusy = false; objectError = `${data.stage}: ${data.message}`; }
   };
+  // A worker that fails to load (module error, out of memory) never answers; surface it instead of loading forever.
+  objectWorker.onerror = event => { objectError = `worker: ${event.message || 'failed to load'}`; };
   objectWorker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), small: params.get('objects') === 's' });
 }
 
@@ -266,11 +273,13 @@ function startWorker() {
       lastVoice = data;
       if (data.voiceMs) push(stats.voice, data.voiceMs);
       window.liveAsr.setSpeaker(data.id, data.speaker);
-    } else if (data.type === 'error') {
+    } else if (data.type === 'progress') workerProgress = data;
+    else if (data.type === 'error') {
       if (data.stage !== 'voice') workerBusy = false;
       workerError = `${data.stage}: ${data.message}`;
     }
   };
+  worker.onerror = event => { workerError = `worker: ${event.message || 'failed to load'}`; };
   worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), identity: !params.has('noid'),
     voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu') });
 }

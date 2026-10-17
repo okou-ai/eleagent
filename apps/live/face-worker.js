@@ -1,6 +1,7 @@
 // Face detection (YuNet), face identity (SFace) and speaker identity (CAM++) in one module worker with
 // onnxruntime-web. Frames arrive as ImageBitmaps and utterances as 16 kHz PCM; nothing leaves the device.
 import { alignmentMatrix, decodeYunet, l2normalize, matchIdentity, prepareSfaceInput, prepareYunetInput, warpAffineBilinear } from '/live/face.js';
+import { downloadProgress, loadModel } from '/live/models.js';
 import { ASSIGN_SIM, MATCH_MARGIN, MATCH_SIM, MIN_SPEECH_SECONDS, RECENT_MS, VOICE_SAMPLE_RATE, fbank, prepareCamppInput, speakerEmbedding, speechOnly } from '/live/voice.js';
 
 const MIN_EMBED_FACE = 64; // Server rule: faces shorter than 64 px are not embedded.
@@ -50,16 +51,17 @@ async function init({ webgpu, threads, identity = true, voice = true, voiceWebgp
   const options = { executionProviders: webgpu ? ['webgpu', 'wasm'] : ['wasm'], enableCpuMemArena: false, enableMemPattern: false };
   const started = performance.now();
   const names = ['yunet.onnx', identity ? 'sface.onnx' : null, voice ? 'campplus.onnx' : null];
-  const [yunetBytes, sfaceBytes, campplusBytes] = await Promise.all(names.map(async name =>
-    name && new Uint8Array(await (await fetch(`/live/assets/models/${name}`)).arrayBuffer())));
+  const progress = downloadProgress(message => self.postMessage(message));
+  const [yunetBytes, sfaceBytes, campplusBytes] = await Promise.all(names.map(name => name && loadModel(name, progress)));
   const loaded = performance.now();
+  self.postMessage({ type: 'progress', stage: 'creating sessions' });
   yunet = await ort.InferenceSession.create(yunetBytes, options);
   sface = sfaceBytes ? await ort.InferenceSession.create(sfaceBytes, options) : null;
   // CAM++ sees a new input length with every sentence; on the CPU that costs nothing extra, so WebGPU is opt-in.
   campplus = campplusBytes ? await ort.InferenceSession.create(campplusBytes,
     { ...options, executionProviders: webgpu && voiceWebgpu ? ['webgpu', 'wasm'] : ['wasm'] }) : null;
   return { backend: webgpu ? 'webgpu' : 'wasm', voiceBackend: campplus ? (webgpu && voiceWebgpu ? 'webgpu' : 'wasm') : 'off',
-    threads, downloadMs: loaded - started, sessionMs: performance.now() - loaded };
+    threads, cached: progress.cached(), downloadMs: loaded - started, sessionMs: performance.now() - loaded };
 }
 
 // The server detects and aligns at full resolution. Instead of a full-frame pass, re-detect each face on a

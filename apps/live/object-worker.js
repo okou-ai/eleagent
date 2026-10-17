@@ -1,6 +1,7 @@
 // Object proposals (YOLOE-26 prompt-free) and appearance vectors (DINOv2-S) in their own module worker, so the slower
 // object pass never delays face tracking. Frames arrive as ImageBitmaps; nothing leaves the device.
 import { l2normalize, matchIdentity } from '/live/face.js';
+import { downloadProgress, loadModel } from '/live/models.js';
 import { DINO_SIZE, decodeYoloe, dinoEmbedding, objectQuality, prepareDinoInput, prepareYoloeInput } from '/live/objects.js';
 
 let ort, yoloe, dino, names = [], candidates = [], thresholds = { threshold: 0.65, margin: 0.1 }, context2d;
@@ -10,15 +11,17 @@ async function init({ webgpu, threads, small }) {
   ort.env.wasm.wasmPaths = '/live/assets/ort/';
   ort.env.wasm.numThreads = threads;
   const options = { executionProviders: webgpu ? ['webgpu', 'wasm'] : ['wasm'], enableCpuMemArena: false, enableMemPattern: false };
-  const started = performance.now();
-  const files = [small ? 'yoloe-s.onnx' : 'yoloe.onnx', 'dinov2-fp16w.onnx'];
-  const [yoloeBytes, dinoBytes] = await Promise.all(files.map(async name =>
-    new Uint8Array(await (await fetch(`/live/assets/models/${name}`)).arrayBuffer())));
-  names = await (await fetch('/live/assets/models/yoloe-names.json')).json();
+  const started = performance.now(), progress = downloadProgress(message => self.postMessage(message));
+  // fp16 weights halve the download; detections match fp32 (IoU >= 0.997), as on the server's fp16 CUDA path.
+  const files = [small ? 'yoloe-s.onnx' : 'yoloe-fp16w.onnx', 'dinov2-fp16w.onnx', 'yoloe-names.json'];
+  const [yoloeBytes, dinoBytes, namesBytes] = await Promise.all(files.map(name => loadModel(name, progress)));
+  names = JSON.parse(new TextDecoder().decode(namesBytes));
   const loaded = performance.now();
+  self.postMessage({ type: 'progress', stage: 'creating sessions' });
   yoloe = await ort.InferenceSession.create(yoloeBytes, options);
   dino = await ort.InferenceSession.create(dinoBytes, options);
-  return { backend: webgpu ? 'webgpu' : 'wasm', model: small ? 'S' : 'L', downloadMs: loaded - started, sessionMs: performance.now() - loaded };
+  return { backend: webgpu ? 'webgpu' : 'wasm', model: small ? 'S' : 'L', cached: progress.cached(),
+    downloadMs: loaded - started, sessionMs: performance.now() - loaded };
 }
 
 function pixels(bitmap, width, height) {
