@@ -4,10 +4,10 @@ const $ = id => document.getElementById(id);
 const CONTEXT_MS = 15_000;
 const EMBED_MS = 1_000;
 const OBJECT_MS = 1_000; // Minimum gap between object passes; a pass itself may take longer.
-const OBJECT_SIZE = 640;
+const OBJECT_SIZE = 480; // The server uses 640; 480 roughly halves the detector's intermediates on a phone.
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
 const params = new URLSearchParams(location.search);
-const BUILD = 'objects-5';
+const BUILD = 'objects-6';
 const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [], objectDetect: [], objectEmbed: [] };
 const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
 let worker, workerBusy = false, workerInfo = null, workerError = null, workerProgress = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
@@ -261,7 +261,8 @@ const threadCount = () => {
 };
 
 // One worker runs every model (one onnxruntime instance and heap). Object models load after the face models, so faces
-// and captions come up first. ?objects=s uses the small detector; ?noobjects skips objects.
+// and captions come up first. The small detector is the default on phones; ?objects=l selects the server's large one
+// (with ?objsize=640 the server's exact input size); ?noobjects skips objects.
 function startWorker() {
   worker = new Worker('/live/live-worker.js', { type: 'module' });
   worker.onmessage = ({ data }) => {
@@ -272,7 +273,7 @@ function startWorker() {
       if (!params.has('noobjects') && !objectsRequested) {
         objectsRequested = true;
         // ?objsize= sets the detector input (the server uses 640); smaller cuts activation memory and time.
-        worker.postMessage({ type: 'objects-init', small: params.get('objects') === 's', size: Number(params.get('objsize')) || OBJECT_SIZE });
+        worker.postMessage({ type: 'objects-init', small: params.get('objects') !== 'l', size: Number(params.get('objsize')) || OBJECT_SIZE });
       }
     } else if (data.type === 'objects-ready') { objectInfo = data; memory = data.memory; }
     else if (data.type === 'objects-result') {
@@ -307,7 +308,7 @@ function startWorker() {
   // A worker that fails to load (module error, out of memory) never answers; surface it instead of loading forever.
   worker.onerror = event => { workerError = `worker: ${event.message || 'failed to load'}`; };
   worker.postMessage({ type: 'init', webgpu: 'gpu' in navigator && !params.has('wasm'), threads: threadCount(), identity: !params.has('noid'),
-    voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu'), gpuCache: params.get('gpucache') || 'disabled' });
+    voice: !params.has('novoice'), voiceWebgpu: params.has('voicegpu'), gpuCache: params.get('gpucache') || 'lazyRelease' });
 }
 
 $('start').addEventListener('click', async () => {

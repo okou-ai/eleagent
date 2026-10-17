@@ -84,13 +84,14 @@ function loader(scope) {
   return { session, progress, totals };
 }
 
-async function init({ webgpu, threads, identity = true, voice = true, voiceWebgpu = false, gpuCache = 'disabled' }) {
+async function init({ webgpu, threads, identity = true, voice = true, voiceWebgpu = false, gpuCache = 'lazyRelease' }) {
   // The pure WASM build is half the size of the WebGPU build and is all a phone without WebGPU needs.
   ort = await import(webgpu ? '/live/assets/ort/ort.webgpu.min.mjs' : '/live/assets/ort/ort.wasm.min.mjs');
   ort.env.wasm.wasmPaths = '/live/assets/ort/';
   ort.env.wasm.numThreads = threads;
-  // A growing CPU arena never returns memory to the page, and onnxruntime's GPU buffer cache keeps every freed
-  // intermediate of every shape it has seen (hundreds of MB after one object pass); phones run out of both.
+  // A growing CPU arena never returns memory to the page, and onnxruntime's default GPU buffer cache keeps every
+  // freed intermediate of every shape it has seen (hundreds of MB after one object pass); phones run out of both.
+  // lazyRelease frees GPU buffers once a run's work is submitted ('disabled' destroys them while still queued).
   const gpuProvider = { name: 'webgpu', storageBufferCacheMode: gpuCache };
   options = { executionProviders: webgpu ? [gpuProvider, 'wasm'] : ['wasm'], enableCpuMemArena: false, enableMemPattern: false };
   const { session, progress, totals } = loader('face');

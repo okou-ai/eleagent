@@ -24,6 +24,10 @@
       // eslint-disable-next-line no-undef
       state.recognizer = createOnlineRecognizer(window.Module);
       state.stream = state.recognizer.createStream();
+      // The recognizer has copied the model into its heap; the packaged files only hold another 60 MB in JS memory.
+      for (const file of ['/encoder.onnx', '/decoder.onnx', '/joiner.onnx', '/tokens.txt']) {
+        try { window.Module.FS_unlink(file); } catch { /* already gone */ }
+      }
       state.status = `ready (${Math.round(performance.now() - started)} ms init)`;
       resolveReady();
     },
