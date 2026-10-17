@@ -51,8 +51,9 @@ export function createLiveHandler({ store, rootDir }) {
     if (!path.startsWith(root + sep) || !info.isFile()) throw new ApiError(404, 'not_found', 'Not found');
     const large = relative.startsWith('assets/');
     res.writeHead(200, { ...HEADERS, 'Content-Type': TYPES[extname(path)] ?? 'application/octet-stream', 'Content-Length': info.size,
-      // Models and runtimes are large and versioned by deployment; app files always revalidate.
-      'Cache-Control': large ? 'private, max-age=3600' : 'no-cache' });
+      // Models and runtimes are large and versioned by deployment. App files change between test rounds and must
+      // never come from a browser or edge cache.
+      'Cache-Control': large ? 'private, max-age=3600' : 'no-store' });
     if (head) return res.end();
     return new Promise((resolve, reject) => createReadStream(path).on('error', reject).on('end', resolve).pipe(res));
   }

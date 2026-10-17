@@ -54,6 +54,8 @@ test('live responses are cross-origin isolated and allow WASM', async t => {
   }
   assert.equal((await f.get('/live/assets/models/yunet.onnx')).headers.get('content-type'), 'application/octet-stream');
   assert.equal((await f.get('/live/live.js')).headers.get('content-type'), 'text/javascript');
+  assert.equal((await f.get('/live/live.js')).headers.get('cache-control'), 'no-store');
+  assert.equal((await f.get('/live')).headers.get('cache-control'), 'no-store');
 });
 
 test('static paths cannot leave the live root', async t => {
