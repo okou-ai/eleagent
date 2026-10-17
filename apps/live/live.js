@@ -6,7 +6,7 @@ const EMBED_MS = 1_000;
 const OBJECT_MS = 1_000; // Minimum gap between object passes; a pass itself may take longer.
 const video = $('video'), overlay = $('overlay'), ctx = overlay.getContext('2d');
 const params = new URLSearchParams(location.search);
-const BUILD = 'objects-2';
+const BUILD = 'objects-3';
 const stats = { frames: 0, since: performance.now(), detect: [], embed: [], read: [], voice: [], objectDetect: [], objectEmbed: [] };
 const voiceCounts = { finals: 0, sent: 0, skipped: 0, results: 0 };
 let worker, workerBusy = false, workerInfo = null, workerError = null, workerProgress = null, camera = 'user', stream, lastEmbed = 0, lastVoice = null;
@@ -95,10 +95,10 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.fillText(text, tagX + 6, tagY + 15);
   };
-  // Objects first so faces stay on top. Unrecognized objects keep their detector label.
+  // Objects first so faces stay on top. Unrecognized objects keep their detector label and best memory score.
   for (const item of objectTracks) {
-    const name = winner(item.votes);
-    box(item.box, name ?? item.box.label, name ? STYLES.object : STYLES.proposal);
+    const name = winner(item.votes), score = item.box.identity?.score;
+    box(item.box, name ?? `${item.box.label}${score == null ? '' : ` ${score.toFixed(2)}`}`, name ? STYLES.object : STYLES.proposal);
   }
   for (const item of tracks) {
     const text = label(item);
