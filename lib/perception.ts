@@ -14,6 +14,8 @@ export interface PerceptionDeps {
   perceive: (input: PerceiveInput) => Promise<{ perception: Record<string, unknown>; cost: number }>;
   /** The language observations are written in (MEMORY_LANGUAGE). */
   language: string;
+  /** Runs after a minute has been heard and seen (handing requests to Okou); its failures do not affect the minute. */
+  afterMinute?: (captureId: string, minute: string) => Promise<unknown>;
 }
 
 export interface Segment { start: string; end: string; speaker: string | null; text: string }
@@ -122,7 +124,9 @@ export async function processMinute(deps: PerceptionDeps, captureId: string, min
   } catch (error) {
     await query(`UPDATE observations SET status = 'failed', error = $3, claimed_at = NULL, updated_at = now()
       WHERE capture_id = $1 AND minute = $2`, [captureId, minute, String((error as Error).message ?? error).slice(0, 500)]);
+    return;
   }
+  await deps.afterMinute?.(captureId, minute).catch(() => {});
 }
 
 // Processes ready minutes one at a time until none is left, `max` were done, or the deadline passes.

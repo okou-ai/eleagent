@@ -21,6 +21,10 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
   conversations (with their original words) are saved and linked, and a first-person diary is written, with time
   anchors back to the recorded minutes. `/account` can also do it now for today so far. Days follow the time zone the
   phone reports (`TIMEZONE` overrides it).
+- **Okou.** Connect [Okou](https://okou.ai) in `/account` and ask it for things out loud while recording ("Okou,
+  find the brand of these eye drops"): after each minute is heard, a model decides whether the newest words were a
+  request for Okou and, if so, hands Okou one message it can act on, with the time and place, in one standing Okou
+  conversation. Speech from other people, calls or videos is not handed over; nothing is sent twice.
 - **Agents.** Your agents read the memory over MCP at `https://<your deployment>/mcp`. Add that address in an agent
   that supports MCP (for example Okou); it sends you to your deployment to sign in and allow access. Access lasts until
   you disconnect the agent in `/account`. Today the tools list recordings and clips and hand out short-lived download
@@ -28,7 +32,7 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
   long-term memories and diaries, with the same tools as the self-hosted Eleagent (`search_entities`, `get_entity`,
   `list_entity_links`, `get_subgraph`).
 
-Next: recognising who speaks (pyannoteAI voiceprints) and handing requests spoken to an agent ("Okou, …") to it.
+Next: recognising who speaks (pyannoteAI voiceprints), so that only the owner's own requests reach Okou.
 
 ## Configuration
 

@@ -2,15 +2,21 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { SCOPE_NAMES, listGrants, ownerSession } from '@/lib/auth';
 import { getAuth } from '@/lib/auth-server';
+import { sql } from '@/lib/db';
+import { okou } from '@/lib/okou-server';
 
 // The owner's connections: the MCP address to give agents, and the agents that may read this memory.
 export default async function Account({ searchParams }: PageProps<'/account'>) {
-  const { sleeping } = await searchParams;
+  const { sleeping, okou: okouResult } = await searchParams;
   const requestHeaders = await headers();
   const auth = await getAuth();
   const session = await ownerSession(auth, requestHeaders);
   if (!session) redirect('/login?return_to=/account');
   const grants = await listGrants(auth, session.user.id);
+  const okouStatus = await okou().status();
+  const handoffs = await sql()`SELECT heard_at, request, status FROM handoffs ORDER BY heard_at DESC LIMIT 5`;
+  const OKOU_MESSAGES: Record<string, string> = { connected: 'Okou is connected.', failed: 'Connecting Okou did not work; try again.',
+    unavailable: 'Okou could not be reached; try again later.' };
   return (
     <main className="signin">
       <h1>Eleagent</h1>
@@ -27,6 +33,19 @@ export default async function Account({ searchParams }: PageProps<'/account'>) {
           <button type="submit" className="quiet">Disconnect</button>
         </form>
       ))}
+      <h2>Okou</h2>
+      <p className="hint">When you ask Okou for something out loud while recording, Eleagent hands the request to Okou
+        in one conversation there.</p>
+      {typeof okouResult === 'string' && OKOU_MESSAGES[okouResult] && <p className="hint" role="status">{OKOU_MESSAGES[okouResult]}</p>}
+      {okouStatus.connected
+        ? <p className="hint">Connected{okouStatus.since ? ` since ${new Date(okouStatus.since).toLocaleString('en')}` : ''}.</p>
+        : <p className="hint">Not connected.</p>}
+      {handoffs.map((handoff) => (
+        <p key={String(handoff.heard_at)} className="hint">{new Date(handoff.heard_at).toLocaleString('en')} · {String(handoff.status)}: {String(handoff.request)}</p>
+      ))}
+      <form className="signin" method="post" action={okouStatus.connected ? '/api/okou/disconnect' : '/api/okou/connect'}>
+        <button type="submit" className="quiet">{okouStatus.connected ? 'Disconnect Okou' : 'Connect Okou'}</button>
+      </form>
       <h2>Memory</h2>
       <p className="hint">Each night Eleagent turns the day&apos;s recordings into memories and a diary. You can also do it now
         for today so far; it takes a few minutes.</p>

@@ -2,12 +2,13 @@ import { after } from 'next/server';
 import { signDownload } from './blob';
 import { sql } from './db';
 import { minuteMedia } from './minute-media';
+import { handOffMinute } from './okou-server';
 import { perceive, transcribe } from './openrouter';
 import { processReadyMinutes, type PerceptionDeps } from './perception';
 
 export function perceptionDeps(): PerceptionDeps {
   return { query: sql().query, signDownload, media: minuteMedia, transcribe, perceive,
-    language: process.env.MEMORY_LANGUAGE || 'English' };
+    language: process.env.MEMORY_LANGUAGE || 'English', afterMinute: handOffMinute };
 }
 
 // After this response, process the minutes that are ready. With `tail`, look again once the quiet period has passed,

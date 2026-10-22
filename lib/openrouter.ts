@@ -99,8 +99,16 @@ export async function perceive(input: PerceiveInput): Promise<{ perception: Reco
   return { perception, cost: costOf(result) };
 }
 
-// A text model's JSON answer, for sleep.
+// A text model's JSON answer (for sleep and handing requests to Okou). Now and then a reply is not JSON: try again,
+// then once more with the perception model.
 export async function completeJson(model: string, system: string, user: string, maxTokens: number) {
+  for (const attempt of [model, model]) {
+    try { return await completeJsonOnce(attempt, system, user, maxTokens); } catch { /* next attempt */ }
+  }
+  return completeJsonOnce(PERCEPTION_MODEL, system, user, maxTokens);
+}
+
+async function completeJsonOnce(model: string, system: string, user: string, maxTokens: number) {
   const result = await call('/chat/completions', {
     model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: maxTokens,
     temperature: 0.3, response_format: { type: 'json_object' }, provider: { zdr: true, data_collection: 'deny' }, usage: { include: true },

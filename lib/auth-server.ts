@@ -13,12 +13,17 @@ export function appOrigin(): string {
 
 let pending: Promise<Auth> | null = null;
 
+// BETTER_AUTH_SECRET, or the secret the first build generated.
+export async function authSecret(): Promise<string> {
+  const [row] = await sql()`SELECT value FROM app_settings WHERE key = 'auth_secret'`;
+  const secret = process.env.BETTER_AUTH_SECRET || row?.value;
+  if (!secret) throw new Error('No auth secret yet: the build applies the database migrations that create it');
+  return secret;
+}
+
 export function getAuth(): Promise<Auth> {
   pending ??= (async () => {
-    const [row] = await sql()`SELECT value FROM app_settings WHERE key = 'auth_secret'`;
-    const secret = process.env.BETTER_AUTH_SECRET || row?.value;
-    if (!secret) throw new Error('No auth secret yet: the build applies the database migrations that create it');
-    return createAuth({ origin: appOrigin(), secret, database: pool() });
+    return createAuth({ origin: appOrigin(), secret: await authSecret(), database: pool() });
   })().catch((error) => {
     pending = null;
     throw error;
