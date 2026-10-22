@@ -2,6 +2,7 @@ import { issueSignedToken, presignUrl } from '@vercel/blob';
 import { verifyAccess } from '@/lib/auth';
 import { getAuth } from '@/lib/auth-server';
 import { sql } from '@/lib/db';
+import { framesFromUrl } from '@/lib/frames';
 import { handleMcp, memoryStore } from '@/lib/mcp';
 
 const DOWNLOAD_MINUTES = 10;
@@ -17,11 +18,11 @@ async function signDownload(pathname: string) {
 export async function POST(request: Request) {
   const access = await verifyAccess(await getAuth(), request);
   if (!access.ok) return access.response;
-  const store = memoryStore(sql().query, signDownload);
+  const store = memoryStore(sql().query, signDownload, framesFromUrl);
   return handleMcp(request, store, access.scopes);
 }
 
 export async function GET(request: Request) {
-  return handleMcp(request, memoryStore(async () => [], signDownload), []);
+  return handleMcp(request, memoryStore(async () => [], signDownload, framesFromUrl), []);
 }
 export const DELETE = GET;
