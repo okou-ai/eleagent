@@ -70,11 +70,11 @@ export function okouConnection({ origin, store, resource = OKOU_MCP, fetchImpl =
   });
 
   return {
-    // Where to send the owner to approve; the PKCE verifier waits in the store for the callback.
-    async start(): Promise<string> {
+    // Where to send the owner to approve; the PKCE verifier (and where to return) waits in the store for the callback.
+    async start(returnTo = '/account'): Promise<string> {
       const server = await discover();
       const state = b64url(randomBytes(24)), verifier = b64url(randomBytes(48));
-      await store.set('okou_pending', { state, verifier, at: now() });
+      await store.set('okou_pending', { state, verifier, at: now(), returnTo });
       const url = new URL(server.authorize);
       url.search = new URLSearchParams({ response_type: 'code', client_id: client.client_id, redirect_uri: callback,
         scope: (server.scopes.some((scope) => WANTED_SCOPES.includes(scope)) ? server.scopes.filter((scope) => WANTED_SCOPES.includes(scope))
@@ -82,8 +82,9 @@ export function okouConnection({ origin, store, resource = OKOU_MCP, fetchImpl =
         code_challenge_method: 'S256', resource, prompt: 'consent' }).toString();
       return url.href;
     },
-    async finish(params: URLSearchParams): Promise<void> {
-      const pending = await store.get('okou_pending') as { state: string; verifier: string; at: number } | null;
+    // Completes the approval; returns the page the owner started from.
+    async finish(params: URLSearchParams): Promise<string> {
+      const pending = await store.get('okou_pending') as { state: string; verifier: string; at: number; returnTo?: string } | null;
       await store.set('okou_pending', null);
       if (!pending || pending.state !== params.get('state') || now() - pending.at > PENDING_MS) throw new Error('This approval expired; connect again');
       if (params.get('error')) throw new Error(`Okou did not approve: ${params.get('error')}`);
@@ -92,6 +93,7 @@ export function okouConnection({ origin, store, resource = OKOU_MCP, fetchImpl =
         redirect_uri: callback, code_verifier: pending.verifier });
       await store.set('okou_tokens', keep(tokens));
       await store.set('okou_connected_at', new Date(now()).toISOString());
+      return pending.returnTo ?? '/account';
     },
     // A current access token, refreshed shortly before it expires; null when not connected.
     async accessToken(): Promise<string | null> {

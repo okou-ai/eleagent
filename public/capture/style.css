@@ -73,5 +73,11 @@ button:focus-visible { outline: 2px solid #0a84ff; outline-offset: 4px; }
 .flip svg { transition: transform .35s ease; }
 .flip.turned svg { transform: rotate(180deg); }
 
+/* Left of the shutter: the Okou mark, grey until Okou is connected. */
+.lead { grid-column: 1; justify-self: start; display: flex; align-items: center; min-width: 0; }
+.okou { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; background: rgba(28, 28, 30, .6); }
+.okou path { fill: #8e8e93; transition: fill .25s ease; }
+.okou[data-connected="true"] path { fill: #ffa500; }
+
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

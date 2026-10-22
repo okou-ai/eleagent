@@ -26,13 +26,13 @@ function harness(network) {
     },
   };
   vm.runInNewContext(source.replace(/^import [\s\S]*?;\n/gm, '').replace(/\nvoid initialize\(\);\s*$/, '') + `
-    globalThis.api = { upload, blocked: () => blocked, setQueue(value) { queue = value; ready = true; } };
+    globalThis.api = { upload, okouStatus, openOkou, blocked: () => blocked, setQueue(value) { queue = value; ready = true; } };
   `, context);
   context.api.setQueue({
     first: async () => queued[0], remove: async item => queued.splice(queued.indexOf(item), 1),
     stats: async () => ({ count: queued.length, bytes: 5 }),
   });
-  return { api: context.api, calls, redirects, timers, queued };
+  return { api: context.api, calls, redirects, timers, queued, elements };
 }
 
 const plan = { pathname: 'captures/web-synthetic-back/0000007.mp4', upload_url: 'https://store.private.blob.vercel-storage.com/x?sig=1' };
@@ -80,4 +80,18 @@ test('a refused clip blocks uploads; a failed store or a wrong receipt keeps the
   const wrong = harness(() => json(200, { receipt: { ...receipt, clip_seq: 8 } }));
   await wrong.api.upload();
   assert.equal(wrong.queued.length, 1);
+});
+
+test('the Okou mark is grey until Okou is connected; grey connects, colour opens the account page', async () => {
+  for (const [connected, target] of [[false, '/api/okou/connect?return_to=/'], [true, '/account']]) {
+    const h = harness(() => json(200, { connected }));
+    await h.api.okouStatus();
+    assert.equal(h.elements.get('okou').dataset.connected, String(connected));
+    h.api.openOkou();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.redirects, [target]);
+  }
+  const offline = harness(() => { throw new Error('offline'); });
+  await offline.api.okouStatus();
+  assert.equal(offline.elements.get('okou').dataset.connected, undefined, 'keeps its state when the status cannot be read');
 });
