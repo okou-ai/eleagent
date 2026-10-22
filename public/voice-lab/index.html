@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>Voice lab · Eleagent</title>
+  <link rel="icon" href="/capture/icon.svg">
+  <link rel="stylesheet" href="/voice-lab/lab.css">
+  <script src="/voice/eleagent-voice.js"></script>
+  <script type="module" src="/voice-lab/lab.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Voice lab</h1>
+    <p class="hint">A wake word and your voiceprint, both running on this device. No audio leaves it.</p>
+    <p id="load" class="status">Loading…</p>
+
+    <section>
+      <h2>1 · Your voiceprint</h2>
+      <p class="hint">Record three samples: each time say “Hey Okou” and a short sentence (4 seconds).</p>
+      <button id="enroll" disabled>Record a sample</button>
+      <button id="forget" class="quiet" disabled>Clear voiceprint</button>
+      <p id="print" class="hint"></p>
+    </section>
+
+    <section>
+      <h2>2 · Wake word</h2>
+      <label>Keywords (phones; one per line, “@label” at the end)
+        <textarea id="keywords" rows="5" spellcheck="false"></textarea></label>
+      <div class="row">
+        <label>Spotting threshold <input id="threshold" type="number" step="0.05" min="0.05" max="0.95" value="0.25"></label>
+        <label>Keyword boost <input id="boost" type="number" step="0.5" min="0.5" max="5" value="1.5"></label>
+        <label>Voice match <input id="match" type="number" step="0.05" min="0" max="1" value="0.5"></label>
+      </div>
+      <button id="listen" disabled>Start listening</button>
+      <p id="meter" class="hint"></p>
+    </section>
+
+    <section>
+      <h2>Heard</h2>
+      <ol id="log"></ol>
+    </section>
+  </main>
+</body>
+</html>
