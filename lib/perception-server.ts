@@ -8,7 +8,10 @@ import { processReadyMinutes, type PerceptionDeps } from './perception';
 
 export function perceptionDeps(): PerceptionDeps {
   return { query: sql().query, signDownload, media: minuteMedia, transcribe, perceive,
-    language: process.env.MEMORY_LANGUAGE || 'English', afterMinute: handOffMinute };
+    language: process.env.MEMORY_LANGUAGE || 'English',
+    // Requests reach Okou when the owner says "Hey Okou" or taps the mark; reading every minute for requests made to
+    // Okou in passing is optional (OKOU_MINUTE_CHECK=on).
+    afterMinute: process.env.OKOU_MINUTE_CHECK === 'on' ? handOffMinute : undefined };
 }
 
 // After this response, process the minutes that are ready. With `tail`, look again once the quiet period has passed,

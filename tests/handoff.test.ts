@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { applyMigrations } from '../db/apply.mjs';
-import { considerHandoff, type HandoffDeps } from '../lib/handoff.ts';
+import { considerHandoff, handleSpokenRequest, type HandoffDeps } from '../lib/handoff.ts';
 import { okouConnection, type OkouStore } from '../lib/okou.ts';
 import { startPostgres } from './postgres.ts';
 
@@ -150,4 +150,41 @@ test('talk that is not for Okou, silence, a missing connection and a failed send
   assert.deepEqual(row, { status: 'failed', error: 'Okou is unavailable' });
   sendFails = false;
   assert.equal(await considerHandoff(deps, CAPTURE, '2026-10-22T01:02:00.000Z'), 'already_handled', 'a failed send is not retried blindly');
+});
+
+test('a request spoken to Okou on purpose is transcribed, written up with its moment and handed over', async () => {
+  const spoken = { ...deps, transcribe: async () => heard };
+  let heard = '';
+  token = null;
+  assert.equal((await handleSpokenRequest(spoken, { wav: Buffer.from('wav'), at: new Date(), captureId: CAPTURE })).status, 409);
+  token = 'okou-token';
+  assert.equal((await handleSpokenRequest(spoken, { wav: Buffer.from('wav'), at: new Date(), captureId: CAPTURE })).status, 422);
+
+  heard = 'Hey Okou, 明天下午提醒我买眼药水';
+  verdict = { message: '明天（10月23日）下午提醒我买眼药水。', screen: '已交给 Okou：明天下午提醒买眼药水' };
+  calls.length = 0;
+  const at = new Date('2026-10-22T01:00:30Z');
+  const done = await handleSpokenRequest(spoken, { wav: Buffer.from('wav'), at, captureId: CAPTURE });
+  assert.deepEqual(done, { status: 200, screen: '已交给 Okou：明天下午提醒买眼药水' });
+  assert.match(prompts.at(-1)!, /local 09:00\)\.\nWhat the camera has been seeing: At a desk\.[\s\S]*What the owner said:\nHey Okou, 明天下午提醒我买眼药水/);
+  assert.equal(calls.at(-1)!.tool, 'send_chat_message');
+  assert.equal(calls.at(-1)!.args.threadId, 'thread-1', 'the same standing conversation');
+  assert.match(String(calls.at(-1)!.args.prompt), /^明天（10月23日）下午提醒我买眼药水。\n\n— Said to Okou through Eleagent at 09:00 \(Asia\/Shanghai\) while recording web-/);
+  const rows = await query(`SELECT source, status, request FROM handoffs WHERE source = 'spoken' ORDER BY id`, []);
+  assert.deepEqual(rows, [{ source: 'spoken', status: 'sent', request: 'Hey Okou, 明天下午提醒我买眼药水' }]);
+
+  sendFails = true;
+  try {
+    assert.equal((await handleSpokenRequest(spoken, { wav: Buffer.from('wav'), at, captureId: CAPTURE })).status, 502);
+  } finally {
+    sendFails = false;
+  }
+  assert.equal((await query(`SELECT count(*)::int AS n FROM handoffs WHERE source = 'spoken' AND status = 'failed'`, []))[0].n, 1);
+
+  // Transcription down: nothing is sent. The model down: Okou gets the owner's own words.
+  const deaf = { ...spoken, transcribe: async () => { throw new Error('OpenRouter is unavailable'); } };
+  assert.equal((await handleSpokenRequest(deaf, { wav: Buffer.from('wav'), at, captureId: CAPTURE })).status, 502);
+  const dumb = { ...spoken, complete: async () => { throw new Error('no JSON'); } };
+  assert.deepEqual(await handleSpokenRequest(dumb, { wav: Buffer.from('wav'), at, captureId: null }), { status: 200, screen: 'Handed to Okou' });
+  assert.match(String(calls.at(-1)!.args.prompt), /^Hey Okou, 明天下午提醒我买眼药水\n\n— Said to Okou through Eleagent at 09:00 \(Asia\/Shanghai\)\.$/);
 });

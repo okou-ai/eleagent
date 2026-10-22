@@ -24,9 +24,9 @@ const costOf = (result: Record<string, unknown>) => Number((result.usage as { co
 export interface Word { text: string; start: number; end: number; speaker: string | null }
 
 // Speech with speaker labels (consistent only within this audio). Times are seconds from the audio's start.
-export async function transcribe(mp3: Buffer): Promise<{ words: Word[]; cost: number }> {
+export async function transcribe(audio: Buffer, format: 'mp3' | 'wav' = 'mp3'): Promise<{ words: Word[]; text: string; cost: number }> {
   const result = await call('/audio/transcriptions', {
-    model: SPEECH_MODEL, input_audio: { data: mp3.toString('base64'), format: 'mp3' },
+    model: SPEECH_MODEL, input_audio: { data: audio.toString('base64'), format },
     diarize: true, response_format: 'verbose_json', provider: { zdr: true },
   });
   const raw = Array.isArray(result.words) ? result.words as Record<string, unknown>[] : [];
@@ -39,7 +39,7 @@ export async function transcribe(mp3: Buffer): Promise<{ words: Word[]; cost: nu
       speaker: speaker === null ? null : typeof speaker === 'number' ? `speaker_${speaker}` : String(speaker),
     };
   }).filter((word) => word.text && Number.isFinite(word.start));
-  return { words, cost: costOf(result) };
+  return { words, text: String(result.text ?? '').trim(), cost: costOf(result) };
 }
 
 export interface PerceiveInput {

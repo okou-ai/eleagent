@@ -81,3 +81,58 @@ button:focus-visible { outline: 2px solid #0a84ff; outline-offset: 4px; }
 
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Talking to Okou (okou.js): a turning rainbow around the screen's edge, the mark large in the middle, the record and
+   camera buttons out of the way, and the request's progress under the mark. */
+@property --aura-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+.aura { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .45s ease; z-index: 5; }
+.aura::before, .aura::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 6px;
+  border-radius: 44px;
+  background: conic-gradient(from var(--aura-angle), #ff2d55, #ff9500, #ffcc00, #34c759, #5ac8fa, #0a84ff, #bf5af2, #ff2d55);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: aura-turn 4s linear infinite;
+}
+.aura::after { padding: 20px; filter: blur(16px); opacity: .85; }
+@keyframes aura-turn { to { --aura-angle: 360deg; } }
+
+.okou { position: relative; z-index: 6; transition: transform .55s cubic-bezier(.2, .9, .25, 1), background-color .3s ease; }
+.shutter, .flip { transition: transform .45s cubic-bezier(.4, 0, .2, 1), opacity .35s ease; }
+video { transition: filter .4s ease; }
+.okou-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: calc(50% + 44px);
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 0 28px;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity .35s ease .15s, transform .35s ease .15s;
+  pointer-events: none;
+  z-index: 6;
+}
+.okou-panel p { max-width: 320px; font-size: 19px; font-weight: 600; letter-spacing: -.3px; text-shadow: 0 1px 12px rgba(0, 0, 0, .6); }
+.okou-cancel { padding: 8px 16px; border-radius: 999px; background: rgba(28, 28, 30, .6); color: rgba(255, 255, 255, .8); font-size: 15px; }
+
+body[data-okou]:not([data-okou=""]) .aura { opacity: 1; }
+body[data-okou]:not([data-okou=""]) .okou { transform: translate(var(--to-x), var(--to-y)) scale(2.6); background: rgba(0, 0, 0, .3); }
+body[data-okou]:not([data-okou=""]) .shutter,
+body[data-okou]:not([data-okou=""]) .flip { transform: translateY(180px); opacity: 0; pointer-events: none; }
+body[data-okou]:not([data-okou=""]) video { filter: brightness(.55) saturate(.85); }
+body[data-okou]:not([data-okou=""]) .okou-panel { opacity: 1; transform: none; pointer-events: auto; }
+body[data-okou="listening"] .okou svg, body[data-okou="setup"] .okou svg { animation: okou-breathe 1.6s ease-in-out infinite; }
+body[data-okou="sending"] .okou svg, body[data-okou="checking"] .okou svg { animation: okou-breathe .7s ease-in-out infinite; }
+body[data-okou="sending"] .okou-cancel, body[data-okou="checking"] .okou-cancel, body[data-okou="done"] .okou-cancel { visibility: hidden; }
+@keyframes okou-breathe { 50% { transform: scale(1.12); } }
+@media (prefers-reduced-motion: reduce) {
+  .aura::before, .aura::after, .okou svg { animation: none !important; }
+}

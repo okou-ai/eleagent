@@ -60,7 +60,7 @@ async function microphone() {
   if (context) return;
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   context = new AudioContext();
-  await context.audioWorklet.addModule('/voice-lab/worklet.js');
+  await context.audioWorklet.addModule('/voice/worklet.js');
   const source = context.createMediaStreamSource(stream);
   const tap = new AudioWorkletNode(context, 'eleagent-tap');
   tap.port.onmessage = ({ data }) => onAudio(resample(data, context.sampleRate));

@@ -1,6 +1,7 @@
 import { CaptureState, CLIP_MS, MAX_CLIP_BYTES, bufferHasRoom, bufferRecovered, captureCamera, formatElapsed,
   newCaptureId, recorderType, resumesAutomatically, uploadDisposition } from './capture-state.js';
 import { openQueue } from './queue.js';
+import { setupOkou } from './okou.js';
 
 const $ = id => document.getElementById(id);
 const CAMERA_KEY = 'eleagent-camera';
@@ -48,8 +49,27 @@ async function okouStatus() {
     $('okou').setAttribute('aria-label', connected ? 'Okou connected' : 'Connect Okou');
   } catch { /* offline: keep the last state */ }
 }
+// Grey goes to Okou to approve; once connected, a tap talks to Okou (okou.js) and a long press opens /account.
+const okouConnected = () => $('okou').dataset.connected === 'true';
+const okou = setupOkou({
+  $, connected: okouConnected, recordingStream: () => stream,
+  captureId: () => (['recording', 'acquiring'].includes(state.phase) ? state.captureId : null),
+  onModeChange: () => render(),
+});
+let okouPress = null, okouLongPress = false;
 function openOkou() {
-  leaveFor($('okou').dataset.connected === 'true' ? '/account' : '/api/okou/connect?return_to=/', 'user_pause');
+  if (okouLongPress) return;
+  if (!okouConnected()) leaveFor('/api/okou/connect?return_to=/', 'user_pause');
+  else okou.tap();
+}
+function pressOkou() {
+  okouLongPress = false;
+  clearTimeout(okouPress);
+  okouPress = setTimeout(() => {
+    if (!okouConnected() || okou.active()) return;
+    okouLongPress = true;
+    leaveFor('/account', 'user_pause');
+  }, 650);
 }
 function sessionExpired(response) {
   return response.type === 'opaqueredirect' || response.status === 401 || response.status === 403 ||
@@ -108,6 +128,7 @@ function stopDevices() {
   if (locationWatch !== undefined) navigator.geolocation.clearWatch(locationWatch);
   locationWatch = undefined;
   locationFix = null;
+  okou.recordingStopped();
   stream?.getTracks().forEach(track => track.stop());
   stream = null;
   $('preview').srcObject = null;
@@ -213,6 +234,8 @@ async function record() {
     if (document.hidden) state.pause('page_hidden');
     if (!state.activate(epoch)) { acquired.getTracks().forEach(track => track.stop()); return; }
     stream = acquired;
+    // The same microphone feeds "Hey Okou".
+    void okou.attach(acquired).catch(() => {});
     const facing = acquired.getVideoTracks()[0]?.getSettings().facingMode;
     const lens = facing === 'user' ? 'front' : facing === 'environment' ? 'back' : camera;
     if (lens !== captureCamera(state.captureId) && state.nextSeq === 0) {
@@ -334,6 +357,9 @@ async function upload() {
 
 $('shutter').addEventListener('click', toggle);
 $('okou').addEventListener('click', openOkou);
+$('okou').addEventListener('pointerdown', pressOkou);
+for (const type of ['pointerup', 'pointercancel', 'pointerleave']) $('okou').addEventListener(type, () => clearTimeout(okouPress));
+$('okou-cancel').addEventListener('click', () => okou.cancel());
 $('flip').addEventListener('click', () => void flip());
 document.addEventListener('pointerdown', () => void requestWakeLock());
 document.addEventListener('visibilitychange', () => {
