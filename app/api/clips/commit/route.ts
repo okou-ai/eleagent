@@ -5,6 +5,7 @@ import { MAX_CLIP_BYTES, clipPathname, contentTypeOf, parseMeta, receipt } from 
 import { sql } from '@/lib/db';
 import { queueClip } from '@/lib/perception';
 import { perceiveAfterResponse } from '@/lib/perception-server';
+import { validTimeZone } from '@/lib/sleep';
 import { jsonError, requireOwner, sameOrigin } from '@/lib/request';
 
 // After answering, the function stays up to process minutes that became ready (perceiveAfterResponse).
@@ -39,6 +40,11 @@ export async function POST(request: NextRequest) {
     ON CONFLICT (capture_id, clip_seq) DO NOTHING RETURNING media_id`;
   if (inserted[0]) {
     await queueClip(sql().query, m.capture_id, m.captured_at);
+    // Days for the diary follow the time zone the phone is in.
+    if (validTimeZone(m.timezone)) {
+      await sql()`INSERT INTO app_settings (key, value) VALUES ('timezone', ${m.timezone})
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value WHERE app_settings.value <> EXCLUDED.value`;
+    }
     perceiveAfterResponse({ tail: true });
   }
   const id = inserted[0]?.media_id

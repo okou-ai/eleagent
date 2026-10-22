@@ -34,6 +34,9 @@ export function parseMeta(input: unknown): Parsed<ClipMeta> {
   if (meta.locations !== undefined && (!Array.isArray(meta.locations) || meta.locations.length > 10)) {
     return { ok: false, error: 'invalid locations' };
   }
+  if (meta.timezone !== undefined && (typeof meta.timezone !== 'string' || !/^[A-Za-z0-9_+\-/]{1,64}$/.test(meta.timezone))) {
+    return { ok: false, error: 'invalid timezone' };
+  }
   return { ok: true, value: meta as ClipMeta };
 }
 

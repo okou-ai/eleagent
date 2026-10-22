@@ -4,7 +4,7 @@ const API = 'https://openrouter.ai/api/v1';
 export const SPEECH_MODEL = 'elevenlabs/scribe-v2';
 export const PERCEPTION_MODEL = 'xiaomi/mimo-v2.6-flash';
 
-async function call(path: string, body: object): Promise<Record<string, unknown>> {
+async function call(path: string, body: object, timeoutMs = 120_000): Promise<Record<string, unknown>> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error('OPENROUTER_API_KEY is not set');
   const response = await fetch(API + path, {
@@ -12,7 +12,7 @@ async function call(path: string, body: object): Promise<Record<string, unknown>
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Title': 'Eleagent',
       'HTTP-Referer': 'https://github.com/okou-ai/eleagent' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`OpenRouter ${path} ${response.status}: ${text.slice(0, 300)}`);
@@ -97,4 +97,18 @@ export async function perceive(input: PerceiveInput): Promise<{ perception: Reco
   let perception: Record<string, unknown>;
   try { perception = JSON.parse(json); } catch { throw new Error('The perception model did not return JSON'); }
   return { perception, cost: costOf(result) };
+}
+
+// A text model's JSON answer, for sleep.
+export async function completeJson(model: string, system: string, user: string, maxTokens: number) {
+  const result = await call('/chat/completions', {
+    model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], max_tokens: maxTokens,
+    temperature: 0.3, response_format: { type: 'json_object' }, provider: { zdr: true, data_collection: 'deny' }, usage: { include: true },
+  }, 240_000);
+  const reply = String((result.choices as { message?: { content?: unknown } }[] | undefined)?.[0]?.message?.content ?? '');
+  try {
+    return { json: JSON.parse(reply.slice(reply.indexOf('{'), reply.lastIndexOf('}') + 1)) as Record<string, unknown>, cost: costOf(result) };
+  } catch {
+    throw new Error(`${model} did not return JSON`);
+  }
 }

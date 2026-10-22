@@ -138,7 +138,8 @@ test('an agent connects with the owner\'s consent, reads memory, keeps access af
   assert.ok(tokens.access_token && tokens.refresh_token);
 
   const listed = await mcp(tokens.access_token, 'tools/list');
-  assert.deepEqual(listed.body.result.tools.map((tool: { name: string }) => tool.name).sort(), ['get_video_clip', 'get_video_frames', 'list_captures', 'list_observations', 'list_video_clips', 'search_observations']);
+  assert.deepEqual(listed.body.result.tools.map((tool: { name: string }) => tool.name).sort(), ['get_entity', 'get_subgraph', 'get_video_clip', 'get_video_frames', 'list_captures', 'list_entity_links', 'list_observations',
+    'list_video_clips', 'search_entities', 'search_observations']);
   const captures = await mcp(tokens.access_token, 'tools/call', { name: 'list_captures', arguments: {} });
   assert.deepEqual(captures.body.result.structuredContent.captures,
     [{ capture_id: CAPTURE, camera: 'back', started_at: '2026-10-22T09:00:00.000Z', last_clip_at: '2026-10-22T09:00:05.000Z', clips: 1 }]);

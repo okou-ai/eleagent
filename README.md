@@ -16,13 +16,19 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
 - **Hearing and seeing.** Each minute of a recording is transcribed by speaker (ElevenLabs Scribe v2) and described
   from its stills and sound (Xiaomi MiMo), both through OpenRouter with zero-data-retention providers. A minute is
   processed once the recording has moved on, usually within a minute or two, for well under a cent per minute.
+- **Sleep.** Each night (03:00 in Shanghai by default, see `vercel.json`) the previous day becomes long-term memory:
+  episodes are digested, people, objects, places, routines and readings are created or enriched, the day's events and
+  conversations (with their original words) are saved and linked, and a first-person diary is written, with time
+  anchors back to the recorded minutes. `/account` can also do it now for today so far. Days follow the time zone the
+  phone reports (`TIMEZONE` overrides it).
 - **Agents.** Your agents read the memory over MCP at `https://<your deployment>/mcp`. Add that address in an agent
   that supports MCP (for example Okou); it sends you to your deployment to sign in and allow access. Access lasts until
   you disconnect the agent in `/account`. Today the tools list recordings and clips and hand out short-lived download
-  links, stills from any moment, and what was heard and seen in each minute (by time, or searched by words).
+  links, stills from any moment, what was heard and seen in each minute (by time, or searched by words), and the
+  long-term memories and diaries, with the same tools as the self-hosted Eleagent (`search_entities`, `get_entity`,
+  `list_entity_links`, `get_subgraph`).
 
-Next: recognising who speaks (pyannoteAI voiceprints) and nightly memory consolidation into a diary, each with MCP
-tools.
+Next: recognising who speaks (pyannoteAI voiceprints) and handing requests spoken to an agent ("Okou, …") to it.
 
 ## Configuration
 
@@ -34,8 +40,9 @@ The Deploy button creates a private Blob store and a Neon Postgres database and 
 | `OPENROUTER_API_KEY` | An [OpenRouter](https://openrouter.ai/keys) key. Requests require zero-data-retention providers. |
 | `PYANNOTE_API_KEY` | A [pyannoteAI](https://dashboard.pyannote.ai) key, to recognise who is speaking. |
 
-Observations are written in English; set `MEMORY_LANGUAGE` (for example `Chinese`) to have them written in another
-language.
+Sleep runs as a Vercel Cron job; set `CRON_SECRET` so that only Vercel can start it (without it anyone can, but it
+only ever consolidates days that are due). Observations, memories and the diary are written in English; set `MEMORY_LANGUAGE` (for example
+`Chinese`) to have them written in another language. Speech and visible text always stay in their own language.
 
 Sign-in and agent access use [Better Auth](https://www.better-auth.com): one owner, no sign-up. Its secret is generated
 into the database on the first build; set `BETTER_AUTH_SECRET` to supply your own, and `BETTER_AUTH_URL` if the

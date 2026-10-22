@@ -4,7 +4,8 @@ import { SCOPE_NAMES, listGrants, ownerSession } from '@/lib/auth';
 import { getAuth } from '@/lib/auth-server';
 
 // The owner's connections: the MCP address to give agents, and the agents that may read this memory.
-export default async function Account() {
+export default async function Account({ searchParams }: PageProps<'/account'>) {
+  const { sleeping } = await searchParams;
   const requestHeaders = await headers();
   const auth = await getAuth();
   const session = await ownerSession(auth, requestHeaders);
@@ -26,6 +27,13 @@ export default async function Account() {
           <button type="submit" className="quiet">Disconnect</button>
         </form>
       ))}
+      <h2>Memory</h2>
+      <p className="hint">Each night Eleagent turns the day&apos;s recordings into memories and a diary. You can also do it now
+        for today so far; it takes a few minutes.</p>
+      {typeof sleeping === 'string' && <p className="hint" role="status">Writing the diary for {sleeping}…</p>}
+      <form className="signin" method="post" action="/api/sleep">
+        <button type="submit" className="quiet">Write today&apos;s diary now</button>
+      </form>
       {/* The capture page is a route handler serving plain HTML, not a Next.js page: navigate to it fully. */}
       {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
       <a href="/">Back to recording</a>
