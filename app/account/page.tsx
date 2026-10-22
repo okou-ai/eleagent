@@ -15,6 +15,7 @@ export default async function Account({ searchParams }: PageProps<'/account'>) {
   const grants = await listGrants(auth, session.user.id);
   const okouStatus = await okou().status();
   const handoffs = await sql()`SELECT heard_at, request, status FROM handoffs ORDER BY heard_at DESC LIMIT 5`;
+  const nights = await sql()`SELECT day::text AS day, status, cost_usd, error FROM sleep_days ORDER BY day DESC LIMIT 3`;
   const OKOU_MESSAGES: Record<string, string> = { connected: 'Okou is connected.', failed: 'Connecting Okou did not work; try again.',
     unavailable: 'Okou could not be reached; try again later.' };
   return (
@@ -50,6 +51,11 @@ export default async function Account({ searchParams }: PageProps<'/account'>) {
       <p className="hint">Each night Eleagent turns the day&apos;s recordings into memories and a diary. You can also do it now
         for today so far; it takes a few minutes.</p>
       {typeof sleeping === 'string' && <p className="hint" role="status">Writing the diary for {sleeping}…</p>}
+      {nights.map((night) => (
+        <p key={String(night.day)} className="hint" data-sleep-day={String(night.day)} data-sleep-status={String(night.status)}>
+          {String(night.day)} · {String(night.status)} · ${Number(night.cost_usd).toFixed(4)}{night.error ? ` · ${String(night.error).slice(0, 300)}` : ''}
+        </p>
+      ))}
       <form className="signin" method="post" action="/api/sleep">
         <button type="submit" className="quiet">Write today&apos;s diary now</button>
       </form>

@@ -6,7 +6,7 @@ import { sql } from './db';
 import { considerHandoff, type HandoffDeps } from './handoff';
 import { OKOU_MCP, okouConnection, type OkouStore } from './okou';
 import { completeJson } from './openrouter';
-import { SLEEP_MODEL } from './sleep';
+import { TEXT_MODEL } from './sleep';
 import { ownerTimeZone } from './sleep-server';
 
 // Okou's tokens are kept in app_settings, encrypted with a key derived from the auth secret.
@@ -63,7 +63,7 @@ export function handoffDeps(): HandoffDeps {
   const connection = okou();
   return {
     query: sql().query, timeZone: ownerTimeZone, okouToken: () => connection.accessToken(), callOkou,
-    complete: (system, user, maxTokens) => completeJson(SLEEP_MODEL, system, user, maxTokens),
+    complete: (system, user, maxTokens) => completeJson(TEXT_MODEL, system, user, maxTokens),
     agentId: process.env.OKOU_AGENT_ID || undefined,
   };
 }

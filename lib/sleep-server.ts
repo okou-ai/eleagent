@@ -1,11 +1,5 @@
 import { sql } from './db';
-import { completeJson } from './openrouter';
-import { SLEEP_MODEL, validTimeZone, type SleepDeps } from './sleep';
-
-export function sleepDeps(): SleepDeps {
-  return { query: sql().query, complete: (system, user, maxTokens) => completeJson(SLEEP_MODEL, system, user, maxTokens),
-    language: process.env.MEMORY_LANGUAGE || 'English' };
-}
+import { validTimeZone } from './sleep';
 
 // The owner's time zone, as their phone last reported it (TIMEZONE overrides; UTC if neither is known).
 export async function ownerTimeZone(): Promise<string> {
