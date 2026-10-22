@@ -7,3 +7,13 @@ body { margin: 0; min-height: 100dvh; display: grid; place-items: center; backgr
 .signin input { background: #1c1c1e; color: inherit; }
 .signin button { background: #f2f2f7; color: #000; border: 0; font-weight: 600; }
 .signin .error { margin: 0; color: #ff453a; }
+.signin h2 { margin: 18px 0 0; font-size: 15px; color: #8e8e93; font-weight: 600; }
+.signin p, .signin ul { margin: 0; }
+.signin ul { padding-left: 20px; display: grid; gap: 6px; }
+.signin .hint { color: #8e8e93; font-size: 14px; }
+.signin code { padding: 10px 12px; border-radius: 10px; background: #1c1c1e; font-size: 13px; word-break: break-all; }
+.signin button.quiet { background: #2c2c2e; color: #f2f2f7; }
+.signin a { color: #0a84ff; text-decoration: none; font-size: 14px; }
+.grant { display: grid; gap: 6px; padding: 12px 0; border-top: 1px solid #2c2c2e; }
+.grant strong { word-break: break-word; }
+.grant span { color: #8e8e93; font-size: 13px; }
