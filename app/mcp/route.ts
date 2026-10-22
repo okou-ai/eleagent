@@ -1,24 +1,19 @@
-import { issueSignedToken, presignUrl } from '@vercel/blob';
 import { verifyAccess } from '@/lib/auth';
 import { getAuth } from '@/lib/auth-server';
+import { signDownload } from '@/lib/blob';
 import { sql } from '@/lib/db';
 import { framesFromUrl } from '@/lib/frames';
 import { handleMcp, memoryStore } from '@/lib/mcp';
+import { perceiveAfterResponse } from '@/lib/perception-server';
 
-const DOWNLOAD_MINUTES = 10;
-
-// A presigned GET for one private clip: agents fetch the video without sending their access token anywhere but here.
-async function signDownload(pathname: string) {
-  const validUntil = Date.now() + DOWNLOAD_MINUTES * 60_000;
-  const token = await issueSignedToken({ pathname, operations: ['get'], validUntil });
-  const { presignedUrl } = await presignUrl(token, { operation: 'get', pathname, access: 'private', validUntil });
-  return { url: presignedUrl, expiresAt: new Date(validUntil) };
-}
+// Reads may trigger processing of minutes that are ready (see perceiveAfterResponse).
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   const access = await verifyAccess(await getAuth(), request);
   if (!access.ok) return access.response;
   const store = memoryStore(sql().query, signDownload, framesFromUrl);
+  perceiveAfterResponse();
   return handleMcp(request, store, access.scopes);
 }
 

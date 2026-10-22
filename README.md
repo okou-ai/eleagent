@@ -13,13 +13,29 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
   safely stored, so a dropped connection loses nothing. Clips go straight into a **private** Vercel Blob store; the
   server only signs each upload and records it in Postgres.
 
+- **Hearing and seeing.** Each minute of a recording is transcribed by speaker (ElevenLabs Scribe v2) and described
+  from its stills and sound (Xiaomi MiMo), both through OpenRouter with zero-data-retention providers. A minute is
+  processed once the recording has moved on, usually within a minute or two, for well under a cent per minute.
+- **Sleep.** Each night (03:00 in Shanghai by default, see `vercel.json`) an agent turns the previous day into
+  long-term memory: [Pi](https://github.com/earendil-works/pi), running in a [Vercel Sandbox](https://vercel.com/docs/sandbox)
+  with Eleagent's memory tools. It reads the day's episodes, looks at stills where details matter, creates or enriches
+  people, objects, places, routines and readings, saves the day's events and conversations (with their original words)
+  and links them, and writes a first-person diary with time anchors back to the recorded minutes. It may only finish
+  once every stretch of speech is remembered as a conversation or dismissed with a reason. The sandbox reaches nothing
+  but this deployment: its firewall adds the run's token, and the deployment holds the OpenRouter key. `/account` can
+  also sleep today so far. Days follow the time zone the phone reports (`TIMEZONE` overrides it).
+- **Okou.** Connect [Okou](https://okou.ai) in `/account` and ask it for things out loud while recording ("Okou,
+  find the brand of these eye drops"): after each minute is heard, a model decides whether the newest words were a
+  request for Okou and, if so, hands Okou one message it can act on, with the time and place, in one standing Okou
+  conversation. Speech from other people, calls or videos is not handed over; nothing is sent twice.
 - **Agents.** Your agents read the memory over MCP at `https://<your deployment>/mcp`. Add that address in an agent
   that supports MCP (for example Okou); it sends you to your deployment to sign in and allow access. Access lasts until
   you disconnect the agent in `/account`. Today the tools list recordings and clips and hand out short-lived download
-  links; more arrive as Eleagent learns to hear and see.
+  links, stills from any moment, what was heard and seen in each minute (by time, or searched by words), and the
+  long-term memories and diaries, with the same tools as the self-hosted Eleagent (`search_entities`, `get_entity`,
+  `list_entity_links`, `get_subgraph`).
 
-Next: hearing and seeing (who speaks with pyannoteAI, what was said and what happened around you with models on
-OpenRouter) and nightly memory consolidation, each with MCP tools.
+Next: recognising who speaks (pyannoteAI voiceprints), so that only the owner's own requests reach Okou.
 
 ## Configuration
 
@@ -30,6 +46,11 @@ The Deploy button creates a private Blob store and a Neon Postgres database and 
 | `OWNER_PASSWORD` | The password you sign in with. Use a long one. |
 | `OPENROUTER_API_KEY` | An [OpenRouter](https://openrouter.ai/keys) key. Requests require zero-data-retention providers. |
 | `PYANNOTE_API_KEY` | A [pyannoteAI](https://dashboard.pyannote.ai) key, to recognise who is speaking. |
+
+Sleep starts from a Vercel Cron job; set `CRON_SECRET` so that only Vercel can start it (without it anyone can, but it
+only ever starts a day that is due). `SLEEP_MODEL` picks the agent's OpenRouter model (default `z-ai/glm-5.3-flash`). Observations, memories and the diary are written in English; set
+`MEMORY_LANGUAGE` (for example `Chinese`) to have them written in another language. Speech and visible text always stay
+in their own language.
 
 Sign-in and agent access use [Better Auth](https://www.better-auth.com): one owner, no sign-up. Its secret is generated
 into the database on the first build; set `BETTER_AUTH_SECRET` to supply your own, and `BETTER_AUTH_URL` if the

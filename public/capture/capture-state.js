@@ -94,7 +94,8 @@ export class CaptureState {
   clip(camera, at = new Date().toISOString()) {
     if (this.phase !== 'recording') throw new Error('Capture is not recording.');
     const meta = { capture_id: this.captureId, clip_seq: this.nextSeq++, captured_at: at,
-      camera, source: 'browser_media_recorder', locations: [], motion: null, capture_gaps: [] };
+      camera, source: 'browser_media_recorder', locations: [], motion: null, capture_gaps: [],
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
     if (this.gap) {
       meta.capture_gaps.push({ ...this.gap, ended_at: at });
       this.gap = null;

@@ -21,6 +21,7 @@ const iso = (value: unknown) => (value == null ? null : new Date(value as string
 const time = z.string().datetime({ offset: true });
 const mediaId = z.string().regex(/^media_[0-9a-f]{32}$/);
 const captureId = z.string().regex(/^web-[0-9a-f-]{36}-(front|back)$/);
+const entityId = z.string().min(3).max(200).regex(/^[a-z]+:[^\u0000-\u001f]+$/);
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
 export class ToolError extends Error {
@@ -30,6 +31,19 @@ export class ToolError extends Error {
     this.code = code;
   }
 }
+
+function observation(row: Row) {
+  const base = { capture_id: row.capture_id, minute: iso(row.minute), status: row.status };
+  if (row.status === 'failed') return { ...base, note: 'Processing failed; it is retried automatically' };
+  if (row.status !== 'done') return { ...base, note: 'Not processed yet; it is usually ready a minute or two after recording' };
+  const perception = (row.perception ?? {}) as Row;
+  return { ...base, started_at: iso(row.started_at), ended_at: iso(row.ended_at), summary: row.summary,
+    place: perception.place, activity: perception.activity, location: row.location ?? null, perception, transcript: row.transcript ?? [] };
+}
+
+const entity = (row: Row) => ({ id: row.id, properties: { kind: row.kind, name: row.name, ...(row.properties as Row), updated_at: iso(row.updated_at) } });
+const link = (row: Row) => ({ a: row.a, b: row.b, properties: { text: row.text, updated_at: iso(row.updated_at) } });
+const ENTITY_COLUMNS = 'id, kind, name, properties, updated_at';
 
 // Reads over the capture tables; every query is parameterised and bounded.
 export function memoryStore(query: Query, signDownload: SignDownload, extractFrames: ExtractFrames) {
@@ -61,6 +75,85 @@ export function memoryStore(query: Query, signDownload: SignDownload, extractFra
       if (!row) throw new ToolError('not_found', 'No clip has this media_id');
       const download = await signDownload(String(row.pathname));
       return { ...clip(row), download_url: download.url, download_expires_at: download.expiresAt.toISOString() };
+    },
+    // What was heard and seen, minute by minute (lib/perception.ts). Minutes not processed yet say so.
+    async listObservations(args: { capture_id?: string; started_at?: string; ended_at?: string; limit: number }) {
+      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript,
+        (SELECT k.meta->'locations'->-1 FROM clips k WHERE k.capture_id = o.capture_id AND k.captured_at >= o.minute
+          AND k.captured_at < o.minute + interval '1 minute' AND jsonb_array_length(k.meta->'locations') > 0
+          ORDER BY k.captured_at DESC LIMIT 1) AS location
+        FROM observations o WHERE ($1::text IS NULL OR capture_id = $1)
+          AND ($2::timestamptz IS NULL OR minute + interval '1 minute' > $2) AND ($3::timestamptz IS NULL OR minute <= $3)
+        ORDER BY minute, capture_id LIMIT $4`, [args.capture_id ?? null, args.started_at ?? null, args.ended_at ?? null, args.limit]);
+      return { observations: rows.map(observation) };
+    },
+    async searchObservations(args: { query: string; started_at?: string; ended_at?: string; limit: number }) {
+      const terms = args.query.split(/\s+/).filter(Boolean).slice(0, 8);
+      if (!terms.length) throw new ToolError('invalid_request', 'Give at least one word to search for');
+      const like = terms.map((_, index) => `search_text ILIKE $${index + 4}`).join(' AND ');
+      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript,
+        (SELECT k.meta->'locations'->-1 FROM clips k WHERE k.capture_id = o.capture_id AND k.captured_at >= o.minute
+          AND k.captured_at < o.minute + interval '1 minute' AND jsonb_array_length(k.meta->'locations') > 0
+          ORDER BY k.captured_at DESC LIMIT 1) AS location
+        FROM observations o WHERE status = 'done' AND ${like}
+          AND ($1::timestamptz IS NULL OR minute + interval '1 minute' > $1) AND ($2::timestamptz IS NULL OR minute <= $2)
+        ORDER BY minute DESC LIMIT $3`,
+      [args.started_at ?? null, args.ended_at ?? null, args.limit, ...terms.map((term) => `%${term.replace(/[\\%_]/g, '\\$&')}%`)]);
+      const matches = (text: unknown) => terms.some((term) => String(text).toLowerCase().includes(term.toLowerCase()));
+      return { observations: rows.map((row) => {
+        const { transcript, ...rest } = observation(row) as Row & { transcript?: { text: string }[] };
+        return { ...rest, perception: undefined, matching_speech: (transcript ?? []).filter((turn) => matches(turn.text)) };
+      }) };
+    },
+    // Long-term memory (lib/sleep.ts): the same entity and link shapes as the self-hosted Eleagent's graph.
+    async searchEntities(args: { search: string; filter: Record<string, string | number | boolean>; limit: number }) {
+      const where: string[] = [], params: unknown[] = [];
+      if (args.search) {
+        params.push(`%${args.search.replace(/[\\%_]/g, '\\$&')}%`);
+        where.push(`(name ILIKE $${params.length} OR search_text ILIKE $${params.length})`);
+      }
+      for (const [key, value] of Object.entries(args.filter)) {
+        if (!/^[a-z_]{1,40}$/.test(key)) throw new ToolError('invalid_request', `Filters are property names like kind or day, not ${key}`);
+        params.push(String(value));
+        where.push(['id', 'kind', 'name'].includes(key) ? `${key} = $${params.length}` : `properties->>'${key}' = $${params.length}`);
+      }
+      params.push(args.limit);
+      const rows = await query(`SELECT ${ENTITY_COLUMNS} FROM entities ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY updated_at DESC LIMIT $${params.length}`, params);
+      return { entities: rows.map(entity) };
+    },
+    async getEntity(id: string) {
+      const [row] = await query(`SELECT ${ENTITY_COLUMNS} FROM entities WHERE id = $1`, [id]);
+      if (!row) throw new ToolError('not_found', 'No memory has this id');
+      return entity(row);
+    },
+    async listEntityLinks(args: { id: string; limit: number }) {
+      const links = await query('SELECT a, b, text, updated_at FROM entity_links WHERE a = $1 OR b = $1 ORDER BY updated_at DESC LIMIT $2', [args.id, args.limit]);
+      const others = links.map((row) => (row.a === args.id ? row.b : row.a));
+      const entities = others.length ? await query(`SELECT ${ENTITY_COLUMNS} FROM entities WHERE id = ANY($1)`, [others]) : [];
+      return { entities: entities.map(entity), links: links.map(link) };
+    },
+    async subgraph(args: { ids: string[]; depth: number; max_entities: number; max_links: number }) {
+      const seen = new Set(args.ids), links = new Map<string, Row>();
+      let frontier = [...seen], truncated = false;
+      for (let level = 0; level < args.depth && frontier.length && !truncated; level++) {
+        const rows = await query(`SELECT a, b, text, updated_at FROM entity_links WHERE a = ANY($1) OR b = ANY($1)
+          ORDER BY updated_at DESC LIMIT $2`, [frontier, args.max_links + 1]);
+        const next: string[] = [];
+        for (const row of rows) {
+          if (links.size >= args.max_links) { truncated = true; break; }
+          for (const id of [String(row.a), String(row.b)]) {
+            if (seen.has(id)) continue;
+            if (seen.size >= args.max_entities) { truncated = true; continue; }
+            seen.add(id);
+            next.push(id);
+          }
+          if (seen.has(String(row.a)) && seen.has(String(row.b))) links.set(`${row.a}\u0000${row.b}`, row);
+        }
+        frontier = next;
+      }
+      const entities = await query(`SELECT ${ENTITY_COLUMNS} FROM entities WHERE id = ANY($1)`, [[...seen]]);
+      return { entities: entities.map(entity), links: [...links.values()].map(link), truncated };
     },
     // Stills by media_id + offsets within that clip, or by capture_id + absolute times; each clip is fetched once.
     async frames(args: { media_id?: string; offsets?: number[]; capture_id?: string; at?: string[]; size: number }) {
@@ -112,14 +205,48 @@ export type MemoryStore = ReturnType<typeof memoryStore>;
 function buildServer(store: MemoryStore, scopes: readonly string[]) {
   const server = new McpServer({ name: 'eleagent', version: '0.1.0' }, {
     instructions: 'Read-only access to the owner\'s Eleagent recordings: captures (continuous recordings from one phone ' +
-      'camera) made of 5-second video clips with sound and location. Times are RFC 3339. Download URLs expire after ' +
-      'a few minutes and need no credentials; never pass access tokens in URLs.',
+      'camera) made of 5-second video clips with sound and location, and observations of what was heard and seen in ' +
+      'each minute. Observations are model interpretations: check important details against get_video_frames. Times ' +
+      'are RFC 3339. Download URLs expire after a few minutes and need no credentials; never pass access tokens in URLs.',
   });
   const tools: [string, string, ResourceScope, z.ZodRawShape, (args: never) => Promise<unknown>][] = [
     ['list_captures', 'List recordings, newest first. Each capture is one continuous recording from the front or back camera. ' +
       'started_at/ended_at keep captures overlapping that window.', 'memory:read', {
       started_at: time.optional(), ended_at: time.optional(), limit: z.number().int().min(1).max(100).default(20),
     }, (args: Parameters<MemoryStore['listCaptures']>[0]) => store.listCaptures(args).then((captures) => ({ captures }))],
+    ['list_observations', 'What Eleagent heard and saw, minute by minute, in time order: a summary, the place and activity, ' +
+      'people, objects, visible text and sounds, the speech by speaker (labels are anonymous and only consistent ' +
+      'within one minute), and the phone\'s last location fix (latitude, longitude, accuracy) in that minute. Filter by ' +
+      'capture_id and/or a time window.', 'memory:read', {
+      capture_id: captureId.optional(), started_at: time.optional(), ended_at: time.optional(),
+      limit: z.number().int().min(1).max(60).default(30),
+    }, (args: Parameters<MemoryStore['listObservations']>[0]) => store.listObservations(args)],
+    ['search_observations', 'Find minutes whose speech or scene mention all the given words (case-insensitive), newest ' +
+      'first, optionally within a time window. Speech and visible text keep the language they were in; descriptions ' +
+      'are in one configured language (English unless set otherwise). Search with words as they would be said, ' +
+      'written or described, and try other languages or synonyms when nothing matches. Use list_observations or ' +
+      'get_video_frames for the details of a hit.', 'memory:read', {
+      query: z.string().min(1).max(200), started_at: time.optional(), ended_at: time.optional(),
+      limit: z.number().int().min(1).max(50).default(20),
+    }, (args: Parameters<MemoryStore['searchObservations']>[0]) => store.searchObservations(args)],
+    ['search_entities', 'Search long-term memories: people, objects, places, routines, readings, events, conversations ' +
+      'and one diary per day (id diary:YYYYMMDD). search matches names and text, case-insensitive; filter matches exact ' +
+      'property values such as {"kind": "diary"} or {"day": "2026-10-22"}. Newest first. Memories are consolidated each ' +
+      'night from observations; they are interpretations, so check what matters against observations and frames.', 'memory:read', {
+      search: z.string().max(512).default(''), filter: z.record(z.union([z.string().max(200), z.number(), z.boolean()])).default({})
+        .refine((filter) => Object.keys(filter).length <= 10), limit: z.number().int().min(1).max(200).default(50),
+    }, (args: Parameters<MemoryStore['searchEntities']>[0]) => store.searchEntities(args)],
+    ['get_entity', 'Read one memory by id (for example person:owner or diary:20261022), with all its properties: ' +
+      'description, evidence, times, a conversation\'s original transcript, a diary\'s text and the moments it refers to.', 'memory:read', {
+      id: entityId,
+    }, ({ id }: { id: string }) => store.getEntity(id)],
+    ['list_entity_links', 'A memory\'s links (one plain sentence per related memory) and the memories at their other end.', 'memory:read', {
+      id: entityId, limit: z.number().int().min(1).max(500).default(100),
+    }, (args: Parameters<MemoryStore['listEntityLinks']>[0]) => store.listEntityLinks(args)],
+    ['get_subgraph', 'Expand seed memory ids through their links, up to depth 3, with explicit limits and a truncated flag.', 'memory:read', {
+      ids: z.array(entityId).min(1).max(50), depth: z.number().int().min(0).max(3).default(1),
+      max_entities: z.number().int().min(1).max(500).default(100), max_links: z.number().int().min(1).max(2000).default(200),
+    }, (args: Parameters<MemoryStore['subgraph']>[0]) => store.subgraph(args)],
     ['list_video_clips', 'List the original 5-second video clips in time order, by capture_id and/or a time window, ' +
       'with any location fixes. When `more` is true, call again with offset increased by limit.', 'memory:read', {
       capture_id: captureId.optional(), started_at: time.optional(),
