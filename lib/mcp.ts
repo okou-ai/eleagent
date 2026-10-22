@@ -31,6 +31,15 @@ export class ToolError extends Error {
   }
 }
 
+function observation(row: Row) {
+  const base = { capture_id: row.capture_id, minute: iso(row.minute), status: row.status };
+  if (row.status === 'failed') return { ...base, note: 'Processing failed; it is retried automatically' };
+  if (row.status !== 'done') return { ...base, note: 'Not processed yet; it is usually ready a minute or two after recording' };
+  const perception = (row.perception ?? {}) as Row;
+  return { ...base, started_at: iso(row.started_at), ended_at: iso(row.ended_at), summary: row.summary,
+    place: perception.place, activity: perception.activity, perception, transcript: row.transcript ?? [] };
+}
+
 // Reads over the capture tables; every query is parameterised and bounded.
 export function memoryStore(query: Query, signDownload: SignDownload, extractFrames: ExtractFrames) {
   const clip = (row: Row) => ({
@@ -61,6 +70,29 @@ export function memoryStore(query: Query, signDownload: SignDownload, extractFra
       if (!row) throw new ToolError('not_found', 'No clip has this media_id');
       const download = await signDownload(String(row.pathname));
       return { ...clip(row), download_url: download.url, download_expires_at: download.expiresAt.toISOString() };
+    },
+    // What was heard and seen, minute by minute (lib/perception.ts). Minutes not processed yet say so.
+    async listObservations(args: { capture_id?: string; started_at?: string; ended_at?: string; limit: number }) {
+      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript
+        FROM observations WHERE ($1::text IS NULL OR capture_id = $1)
+          AND ($2::timestamptz IS NULL OR minute + interval '1 minute' > $2) AND ($3::timestamptz IS NULL OR minute <= $3)
+        ORDER BY minute, capture_id LIMIT $4`, [args.capture_id ?? null, args.started_at ?? null, args.ended_at ?? null, args.limit]);
+      return { observations: rows.map(observation) };
+    },
+    async searchObservations(args: { query: string; started_at?: string; ended_at?: string; limit: number }) {
+      const terms = args.query.split(/\s+/).filter(Boolean).slice(0, 8);
+      if (!terms.length) throw new ToolError('invalid_request', 'Give at least one word to search for');
+      const like = terms.map((_, index) => `search_text ILIKE $${index + 4}`).join(' AND ');
+      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript
+        FROM observations WHERE status = 'done' AND ${like}
+          AND ($1::timestamptz IS NULL OR minute + interval '1 minute' > $1) AND ($2::timestamptz IS NULL OR minute <= $2)
+        ORDER BY minute DESC LIMIT $3`,
+      [args.started_at ?? null, args.ended_at ?? null, args.limit, ...terms.map((term) => `%${term.replace(/[\\%_]/g, '\\$&')}%`)]);
+      const matches = (text: unknown) => terms.some((term) => String(text).toLowerCase().includes(term.toLowerCase()));
+      return { observations: rows.map((row) => {
+        const { transcript, ...rest } = observation(row) as Row & { transcript?: { text: string }[] };
+        return { ...rest, perception: undefined, matching_speech: (transcript ?? []).filter((turn) => matches(turn.text)) };
+      }) };
     },
     // Stills by media_id + offsets within that clip, or by capture_id + absolute times; each clip is fetched once.
     async frames(args: { media_id?: string; offsets?: number[]; capture_id?: string; at?: string[]; size: number }) {
@@ -112,14 +144,26 @@ export type MemoryStore = ReturnType<typeof memoryStore>;
 function buildServer(store: MemoryStore, scopes: readonly string[]) {
   const server = new McpServer({ name: 'eleagent', version: '0.1.0' }, {
     instructions: 'Read-only access to the owner\'s Eleagent recordings: captures (continuous recordings from one phone ' +
-      'camera) made of 5-second video clips with sound and location. Times are RFC 3339. Download URLs expire after ' +
-      'a few minutes and need no credentials; never pass access tokens in URLs.',
+      'camera) made of 5-second video clips with sound and location, and observations of what was heard and seen in ' +
+      'each minute. Observations are model interpretations: check important details against get_video_frames. Times ' +
+      'are RFC 3339. Download URLs expire after a few minutes and need no credentials; never pass access tokens in URLs.',
   });
   const tools: [string, string, ResourceScope, z.ZodRawShape, (args: never) => Promise<unknown>][] = [
     ['list_captures', 'List recordings, newest first. Each capture is one continuous recording from the front or back camera. ' +
       'started_at/ended_at keep captures overlapping that window.', 'memory:read', {
       started_at: time.optional(), ended_at: time.optional(), limit: z.number().int().min(1).max(100).default(20),
     }, (args: Parameters<MemoryStore['listCaptures']>[0]) => store.listCaptures(args).then((captures) => ({ captures }))],
+    ['list_observations', 'What Eleagent heard and saw, minute by minute, in time order: a summary, the place and activity, ' +
+      'people, objects, visible text and sounds, and the speech by speaker (labels are anonymous and only consistent ' +
+      'within one minute). Filter by capture_id and/or a time window.', 'memory:read', {
+      capture_id: captureId.optional(), started_at: time.optional(), ended_at: time.optional(),
+      limit: z.number().int().min(1).max(60).default(30),
+    }, (args: Parameters<MemoryStore['listObservations']>[0]) => store.listObservations(args)],
+    ['search_observations', 'Find minutes whose speech or scene mention all the given words (case-insensitive), newest ' +
+      'first, optionally within a time window. Use list_observations or get_video_frames for the details of a hit.', 'memory:read', {
+      query: z.string().min(1).max(200), started_at: time.optional(), ended_at: time.optional(),
+      limit: z.number().int().min(1).max(50).default(20),
+    }, (args: Parameters<MemoryStore['searchObservations']>[0]) => store.searchObservations(args)],
     ['list_video_clips', 'List the original 5-second video clips in time order, by capture_id and/or a time window, ' +
       'with any location fixes. When `more` is true, call again with offset increased by limit.', 'memory:read', {
       capture_id: captureId.optional(), started_at: time.optional(),

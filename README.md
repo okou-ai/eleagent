@@ -13,13 +13,16 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
   safely stored, so a dropped connection loses nothing. Clips go straight into a **private** Vercel Blob store; the
   server only signs each upload and records it in Postgres.
 
+- **Hearing and seeing.** Each minute of a recording is transcribed by speaker (ElevenLabs Scribe v2) and described
+  from its stills and sound (Xiaomi MiMo), both through OpenRouter with zero-data-retention providers. A minute is
+  processed once the recording has moved on, usually within a minute or two, for well under a cent per minute.
 - **Agents.** Your agents read the memory over MCP at `https://<your deployment>/mcp`. Add that address in an agent
   that supports MCP (for example Okou); it sends you to your deployment to sign in and allow access. Access lasts until
   you disconnect the agent in `/account`. Today the tools list recordings and clips and hand out short-lived download
-  links; more arrive as Eleagent learns to hear and see.
+  links, stills from any moment, and what was heard and seen in each minute (by time, or searched by words).
 
-Next: hearing and seeing (who speaks with pyannoteAI, what was said and what happened around you with models on
-OpenRouter) and nightly memory consolidation, each with MCP tools.
+Next: recognising who speaks (pyannoteAI voiceprints) and nightly memory consolidation into a diary, each with MCP
+tools.
 
 ## Configuration
 
@@ -30,6 +33,9 @@ The Deploy button creates a private Blob store and a Neon Postgres database and 
 | `OWNER_PASSWORD` | The password you sign in with. Use a long one. |
 | `OPENROUTER_API_KEY` | An [OpenRouter](https://openrouter.ai/keys) key. Requests require zero-data-retention providers. |
 | `PYANNOTE_API_KEY` | A [pyannoteAI](https://dashboard.pyannote.ai) key, to recognise who is speaking. |
+
+Observations are written in English; set `MEMORY_LANGUAGE` (for example `Chinese`) to have them written in another
+language.
 
 Sign-in and agent access use [Better Auth](https://www.better-auth.com): one owner, no sign-up. Its secret is generated
 into the database on the first build; set `BETTER_AUTH_SECRET` to supply your own, and `BETTER_AUTH_URL` if the

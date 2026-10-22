@@ -9,7 +9,7 @@ import ffmpeg from '@ffmpeg-installer/ffmpeg';
 
 export const MAX_FRAMES = 6;
 
-function run(args: string[]): Promise<Buffer> {
+export function run(args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(ffmpeg.path, args, { encoding: 'buffer', maxBuffer: 16_000_000, timeout: 20_000 }, (error, stdout, stderr) => {
       if (error) reject(new Error(`ffmpeg: ${stderr.toString().trim().slice(-200) || error.message}`));
@@ -36,6 +36,18 @@ export async function framesFromFile(file: string, offsets: number[], size: numb
     frames.push(jpeg);
   }
   return frames;
+}
+
+// The clip's sound as 16 kHz mono 16-bit PCM; empty when it has no audio track.
+export async function audioPcm(file: string): Promise<Buffer> {
+  return run(['-nostdin', '-hide_banner', '-loglevel', 'error', '-protocol_whitelist', 'file,pipe', '-i', file,
+    '-map', '0:a:0?', '-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1']).catch(() => Buffer.alloc(0));
+}
+
+// 16 kHz mono PCM (a file) as MP3, the audio format speech and omni models accept.
+export function encodeMp3(pcmFile: string): Promise<Buffer> {
+  return run(['-nostdin', '-hide_banner', '-loglevel', 'error', '-f', 's16le', '-ar', '16000', '-ac', '1', '-i', pcmFile,
+    '-c:a', 'libmp3lame', '-b:a', '48k', '-f', 'mp3', 'pipe:1']);
 }
 
 export async function framesFromUrl(url: string, offsets: number[], size: number): Promise<Buffer[]> {
