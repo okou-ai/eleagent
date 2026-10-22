@@ -8,7 +8,7 @@ const STORAGE_FULL = 'Storage full';
 const state = new CaptureState();
 let queue, stream, recorder, wakeLock, clipTimer, locationWatch, locationFix, ticker, releaseTab, uploadTimer;
 let session = null, ready = false, flipping = false, uploading = false, requestingWake = false;
-let fatal = null, problem = null, blocked = null, uploadIssue = null, signInNavigationReady = false;
+let fatal = null, problem = null, blocked = null, uploadIssue = null, leaving = false;
 let pending = { count: 0, bytes: 0 };
 let recordedMs = 0, recordingSince = 0;
 let camera = remembered(CAMERA_KEY) === 'front' ? 'front' : 'back';
@@ -20,18 +20,36 @@ function remember(key, value) {
   try { localStorage.setItem(key, value); } catch { /* Private browsing can refuse storage; the value still lasts this visit. */ }
 }
 
+// Leaves the page for another one, after the recorder has stopped and its last segment is safely queued.
+function leaveFor(url, reason) {
+  pause(reason);
+  render();
+  void Promise.resolve(session).catch(() => {}).then(() => {
+    leaving = true;
+    window.location.assign(url);
+  });
+}
+
 // The server owns the session cookie; the page never handles credentials.
 function signIn() {
   if (blocked === 'auth') return;
   blocked = 'auth';
   clearTimeout(uploadTimer);
-  pause('capture_interrupted');
-  render();
-  // Pause stops the recorder; its last segment must reach IndexedDB before navigation.
-  void Promise.resolve(session).catch(() => {}).then(() => {
-    signInNavigationReady = true;
-    window.location.assign('/login?return_to=/');
-  });
+  leaveFor('/login?return_to=/', 'capture_interrupted');
+}
+
+// The Okou mark: grey until Eleagent is connected to the owner's Okou (requests said to Okou go there), in colour once
+// it is. Grey goes to Okou to approve and comes back here; colour opens the account page, where Okou is managed.
+async function okouStatus() {
+  try {
+    const response = await fetch('/api/okou/status', { cache: 'no-store' });
+    const connected = response.ok && (await response.json()).connected === true;
+    $('okou').dataset.connected = String(connected);
+    $('okou').setAttribute('aria-label', connected ? 'Okou connected' : 'Connect Okou');
+  } catch { /* offline: keep the last state */ }
+}
+function openOkou() {
+  leaveFor($('okou').dataset.connected === 'true' ? '/account' : '/api/okou/connect?return_to=/', 'user_pause');
 }
 function sessionExpired(response) {
   return response.type === 'opaqueredirect' || response.status === 401 || response.status === 403 ||
@@ -315,10 +333,12 @@ async function upload() {
 }
 
 $('shutter').addEventListener('click', toggle);
+$('okou').addEventListener('click', openOkou);
 $('flip').addEventListener('click', () => void flip());
 document.addEventListener('pointerdown', () => void requestWakeLock());
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pause('page_hidden'); return; }
+  void okouStatus();
   void upload();
   resumeIfAllowed();
   void requestWakeLock();
@@ -330,11 +350,12 @@ window.addEventListener('pagehide', () => { pause('page_hidden'); ready = false;
 window.addEventListener('pageshow', event => { if (event.persisted) window.location.reload(); });
 window.addEventListener('beforeunload', event => {
   // The sign-in navigation already waits for the last segment to be durably queued.
-  if (signInNavigationReady) return;
+  if (leaving) return;
   if (session || pending.count || ['recording', 'acquiring'].includes(state.phase)) { event.preventDefault(); event.returnValue = ''; }
 });
 
 async function initialize() {
+  void okouStatus();
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder || !window.indexedDB || !navigator.locks) {
     fatal = 'Open in Safari or Chrome over HTTPS';
     render();
