@@ -41,8 +41,9 @@ The Deploy button creates a private Blob store and a Neon Postgres database and 
 | `PYANNOTE_API_KEY` | A [pyannoteAI](https://dashboard.pyannote.ai) key, to recognise who is speaking. |
 
 Sleep runs as a Vercel Cron job; set `CRON_SECRET` so that only Vercel can start it (without it anyone can, but it
-only ever consolidates days that are due). Observations, memories and the diary are written in English; set `MEMORY_LANGUAGE` (for example
-`Chinese`) to have them written in another language. Speech and visible text always stay in their own language.
+only ever consolidates days that are due). Observations, memories and the diary are written in English; set
+`MEMORY_LANGUAGE` (for example `Chinese`) to have them written in another language. Speech and visible text always stay
+in their own language.
 
 Sign-in and agent access use [Better Auth](https://www.better-auth.com): one owner, no sign-up. Its secret is generated
 into the database on the first build; set `BETTER_AUTH_SECRET` to supply your own, and `BETTER_AUTH_URL` if the
