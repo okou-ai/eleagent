@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Fetched at build time (scripts/fetch-voice-models.mjs)
+/public/voice/models/speaker.onnx

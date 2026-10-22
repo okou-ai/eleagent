@@ -24,10 +24,13 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
   once every stretch of speech is remembered as a conversation or dismissed with a reason. The sandbox reaches nothing
   but this deployment: its firewall adds the run's token, and the deployment holds the OpenRouter key. `/account` can
   also sleep today so far. Days follow the time zone the phone reports (`TIMEZONE` overrides it).
-- **Okou.** Connect [Okou](https://okou.ai) in `/account` and ask it for things out loud while recording ("Okou,
-  find the brand of these eye drops"): after each minute is heard, a model decides whether the newest words were a
-  request for Okou and, if so, hands Okou one message it can act on, with the time and place, in one standing Okou
-  conversation. Speech from other people, calls or videos is not handed over; nothing is sent twice.
+- **Okou.** The Okou mark left of the record button is grey until you connect [Okou](https://okou.ai) (tap it, or
+  use `/account`), then coloured. While recording, say "Hey Okou" or tap the mark: the screen's edge lights up, the
+  mark moves to the middle and you say what you want ("find the brand of these eye drops"). When you stop speaking,
+  Eleagent transcribes the request and hands Okou one message it can act on, with the time and what the camera saw,
+  in one standing Okou conversation. The wake word and a check that it is your voice run on the phone; the first use
+  records your voiceprint (three short samples, kept in the browser). A long press on the mark opens `/account`.
+  `OKOU_MINUTE_CHECK=on` also has a model look for spoken requests in every recorded minute.
 - **Agents.** Your agents read the memory over MCP at `https://<your deployment>/mcp`. Add that address in an agent
   that supports MCP (for example Okou); it sends you to your deployment to sign in and allow access. Access lasts until
   you disconnect the agent in `/account`. Today the tools list recordings and clips and hand out short-lived download
@@ -35,7 +38,7 @@ memory you and your agents can ask about. It runs entirely on your own Vercel ac
   long-term memories and diaries, with the same tools as the self-hosted Eleagent (`search_entities`, `get_entity`,
   `list_entity_links`, `get_subgraph`).
 
-Next: recognising who speaks (pyannoteAI voiceprints), so that only the owner's own requests reach Okou.
+Next: recognising who speaks in the recordings (pyannoteAI voiceprints).
 
 ## Configuration
 

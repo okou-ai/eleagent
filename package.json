@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/migrate.mjs && next build",
+    "build": "node scripts/migrate.mjs && node scripts/fetch-voice-models.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "node --test 'tests/*.test.*'",

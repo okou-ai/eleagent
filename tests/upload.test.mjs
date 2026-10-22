@@ -12,9 +12,10 @@ function harness(network) {
   const element = () => ({ textContent: '', dataset: {}, classList: { toggle() {} }, setAttribute() {}, addEventListener() {} });
   const elements = new Map();
   const queued = [{ meta: { capture_id: 'web-synthetic-back', clip_seq: 7 }, blob: new Blob(['video'], { type: 'video/mp4;codecs=avc1' }) }];
-  const calls = [], redirects = [], timers = [];
+  const calls = [], redirects = [], timers = [], okouTaps = [];
   const context = {
     ...capture, Blob, AbortController, Promise, JSON, performance,
+    setupOkou: () => ({ attach: async () => {}, recordingStopped() {}, active: () => false, tap: () => okouTaps.push('tap'), cancel() {} }),
     document: { getElementById: id => elements.get(id) ?? elements.set(id, element()).get(id), addEventListener() {}, hidden: false },
     window: { addEventListener() {}, location: { assign: url => redirects.push(url) } },
     navigator: { onLine: true },
@@ -32,7 +33,7 @@ function harness(network) {
     first: async () => queued[0], remove: async item => queued.splice(queued.indexOf(item), 1),
     stats: async () => ({ count: queued.length, bytes: 5 }),
   });
-  return { api: context.api, calls, redirects, timers, queued, elements };
+  return { api: context.api, calls, redirects, timers, queued, elements, okouTaps };
 }
 
 const plan = { pathname: 'captures/web-synthetic-back/0000007.mp4', upload_url: 'https://store.private.blob.vercel-storage.com/x?sig=1' };
@@ -82,15 +83,21 @@ test('a refused clip blocks uploads; a failed store or a wrong receipt keeps the
   assert.equal(wrong.queued.length, 1);
 });
 
-test('the Okou mark is grey until Okou is connected; grey connects, colour opens the account page', async () => {
-  for (const [connected, target] of [[false, '/api/okou/connect?return_to=/'], [true, '/account']]) {
-    const h = harness(() => json(200, { connected }));
-    await h.api.okouStatus();
-    assert.equal(h.elements.get('okou').dataset.connected, String(connected));
-    h.api.openOkou();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(h.redirects, [target]);
-  }
+test('the Okou mark is grey until Okou is connected; grey connects, colour talks to Okou', async () => {
+  const grey = harness(() => json(200, { connected: false }));
+  await grey.api.okouStatus();
+  assert.equal(grey.elements.get('okou').dataset.connected, 'false');
+  grey.api.openOkou();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(grey.redirects, ['/api/okou/connect?return_to=/']);
+
+  const colour = harness(() => json(200, { connected: true }));
+  await colour.api.okouStatus();
+  assert.equal(colour.elements.get('okou').dataset.connected, 'true');
+  colour.api.openOkou();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(colour.redirects, []);
+  assert.deepEqual(colour.okouTaps, ['tap']);
   const offline = harness(() => { throw new Error('offline'); });
   await offline.api.okouStatus();
   assert.equal(offline.elements.get('okou').dataset.connected, undefined, 'keeps its state when the status cannot be read');

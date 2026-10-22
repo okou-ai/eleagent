@@ -1,7 +1,7 @@
 // Clips are PUT to the Blob API (https://vercel.com/api/blob/?pathname=...), the host the SDK signs uploads for; reads of
 // private blobs go to <store>.private.blob.vercel-storage.com.
 export const CAPTURE_CSP = [
-  "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:", "media-src 'self' blob:",
+  "default-src 'self'", "script-src 'self' 'wasm-unsafe-eval'", "style-src 'self'", "img-src 'self' data:", "media-src 'self' blob:",
   "connect-src 'self' https://vercel.com/api/blob/ https://*.blob.vercel-storage.com", "base-uri 'none'",
   "form-action 'self'", "frame-ancestors 'none'",
 ].join('; ');
@@ -28,6 +28,12 @@ export const CAPTURE_HTML = `<!doctype html>
   <main>
     <video id="preview" autoplay playsinline muted aria-label="Camera preview"></video>
     <p id="status" class="status" role="status" aria-live="polite"></p>
+    <!-- Talking to Okou (okou.js): the lit edge, and what is happening with the request. -->
+    <div id="aura" class="aura" aria-hidden="true"></div>
+    <div class="okou-panel" role="status" aria-live="polite">
+      <p id="okou-text"></p>
+      <button id="okou-cancel" class="okou-cancel" type="button">Cancel</button>
+    </div>
     <div class="controls">
       <div class="lead">
         <!-- Okou: grey until Eleagent is connected to the owner's Okou, in colour once it is (app.js). -->

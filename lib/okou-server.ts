@@ -5,7 +5,7 @@ import { appOrigin, authSecret } from './auth-server';
 import { sql } from './db';
 import { considerHandoff, type HandoffDeps } from './handoff';
 import { OKOU_MCP, okouConnection, type OkouStore } from './okou';
-import { completeJson } from './openrouter';
+import { completeJson, transcribe } from './openrouter';
 import { TEXT_MODEL } from './sleep';
 import { ownerTimeZone } from './sleep-server';
 
@@ -65,6 +65,7 @@ export function handoffDeps(): HandoffDeps {
     query: sql().query, timeZone: ownerTimeZone, okouToken: () => connection.accessToken(), callOkou,
     complete: (system, user, maxTokens) => completeJson(TEXT_MODEL, system, user, maxTokens),
     agentId: process.env.OKOU_AGENT_ID || undefined,
+    transcribe: async (wav) => (await transcribe(wav, 'wav')).text,
   };
 }
 
