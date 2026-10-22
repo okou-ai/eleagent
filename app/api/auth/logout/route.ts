@@ -1,10 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { SESSION_COOKIE, endSession } from '@/lib/session';
-import { sameOrigin } from '@/lib/request';
+import { getAuth } from '@/lib/auth-server';
+import { sameOrigin, withCookies } from '@/lib/request';
 
+// Ends this browser's session. Agents connected with offline access keep theirs; revoke them in /account.
 export async function POST(request: NextRequest) {
-  if (sameOrigin(request)) await endSession(request.cookies.get(SESSION_COOKIE)?.value);
   const response = NextResponse.redirect(new URL('/login', request.url), 303);
-  response.cookies.delete(SESSION_COOKIE);
-  return response;
+  if (!sameOrigin(request)) return response;
+  const auth = await getAuth();
+  const signedOut = await auth.api.signOut({ headers: request.headers, asResponse: true });
+  return withCookies(response, signedOut);
 }
