@@ -46,7 +46,8 @@ const form = (fields: Record<string, string>) => ({
   method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields),
 });
 const store = () => memoryStore((text, params) => postgres.pool.query(text, params).then((result) => result.rows),
-  async (pathname) => ({ url: `https://blob.example/${pathname}?signed`, expiresAt: new Date(Date.now() + 600_000) }));
+  async (pathname) => ({ url: `https://blob.example/${pathname}?signed`, expiresAt: new Date(Date.now() + 600_000) }),
+  async () => { throw new Error('frames are covered by tests/frames.test.ts'); });
 async function mcp(token: string | null, method: string, params: object = {}) {
   const request = new Request(`${ORIGIN}/mcp`, {
     method: 'POST',
@@ -137,11 +138,11 @@ test('an agent connects with the owner\'s consent, reads memory, keeps access af
   assert.ok(tokens.access_token && tokens.refresh_token);
 
   const listed = await mcp(tokens.access_token, 'tools/list');
-  assert.deepEqual(listed.body.result.tools.map((tool: { name: string }) => tool.name).sort(), ['get_clip', 'list_captures', 'list_clips']);
+  assert.deepEqual(listed.body.result.tools.map((tool: { name: string }) => tool.name).sort(), ['get_video_clip', 'get_video_frames', 'list_captures', 'list_video_clips']);
   const captures = await mcp(tokens.access_token, 'tools/call', { name: 'list_captures', arguments: {} });
   assert.deepEqual(captures.body.result.structuredContent.captures,
     [{ capture_id: CAPTURE, camera: 'back', started_at: '2026-10-22T09:00:00.000Z', last_clip_at: '2026-10-22T09:00:05.000Z', clips: 1 }]);
-  const clip = await mcp(tokens.access_token, 'tools/call', { name: 'get_clip', arguments: { media_id: MEDIA } });
+  const clip = await mcp(tokens.access_token, 'tools/call', { name: 'get_video_clip', arguments: { media_id: MEDIA } });
   assert.equal(clip.body.result.structuredContent.download_url, `https://blob.example/captures/${CAPTURE}/0000000.mp4?signed`);
   assert.deepEqual((await listGrants(auth, owner.user.id)).map((grant) => grant.clientName), ['Test agent']);
 
@@ -150,7 +151,7 @@ test('an agent connects with the owner\'s consent, reads memory, keeps access af
   const refreshed = await refresh(clientId, tokens.refresh_token);
   assert.equal(refreshed.status, 200, await refreshed.clone().text());
   const renewed = await refreshed.json();
-  assert.equal((await mcp(renewed.access_token, 'tools/call', { name: 'list_clips', arguments: { capture_id: CAPTURE } })).status, 200);
+  assert.equal((await mcp(renewed.access_token, 'tools/call', { name: 'list_video_clips', arguments: { capture_id: CAPTURE } })).status, 200);
 
   await revokeGrant(auth, owner.user.id, clientId);
   assert.equal((await mcp(renewed.access_token, 'tools/list')).status, 401);
