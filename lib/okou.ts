@@ -7,6 +7,8 @@ import { createHash, randomBytes } from 'node:crypto';
 
 export const OKOU_MCP = 'https://api.okou.ai/mcp';
 const PENDING_MS = 10 * 60_000;
+// Only what handing over requests needs: read and send chat messages, and stay connected.
+const WANTED_SCOPES = ['okou:chat:read', 'okou:chat:send', 'offline_access'];
 const REFRESH_EARLY_MS = 2 * 60_000;
 
 export interface OkouStore {
@@ -75,7 +77,8 @@ export function okouConnection({ origin, store, resource = OKOU_MCP, fetchImpl =
       await store.set('okou_pending', { state, verifier, at: now() });
       const url = new URL(server.authorize);
       url.search = new URLSearchParams({ response_type: 'code', client_id: client.client_id, redirect_uri: callback,
-        scope: server.scopes.join(' '), state, code_challenge: b64url(createHash('sha256').update(verifier).digest()),
+        scope: (server.scopes.some((scope) => WANTED_SCOPES.includes(scope)) ? server.scopes.filter((scope) => WANTED_SCOPES.includes(scope))
+          : server.scopes).join(' '), state, code_challenge: b64url(createHash('sha256').update(verifier).digest()),
         code_challenge_method: 'S256', resource, prompt: 'consent' }).toString();
       return url.href;
     },

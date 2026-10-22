@@ -24,7 +24,7 @@ function fakeOkou() {
     const url = new URL(String(input));
     const json = (body: object, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
     if (url.href === 'https://api.okou.ai/.well-known/oauth-protected-resource/mcp') {
-      return json({ resource: 'https://api.okou.ai/mcp', authorization_servers: ['https://clerk.okou.example'], scopes_supported: ['okou:chat:read', 'okou:chat:send', 'offline_access'] });
+      return json({ resource: 'https://api.okou.ai/mcp', authorization_servers: ['https://clerk.okou.example'], scopes_supported: ['openid', 'okou:chat:read', 'okou:chat:send', 'okou:chat:manage', 'offline_access'] });
     }
     if (url.href === 'https://clerk.okou.example/.well-known/oauth-authorization-server') {
       return json({ issuer: 'https://clerk.okou.example', authorization_endpoint: 'https://clerk.okou.example/oauth/authorize',
