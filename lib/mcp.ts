@@ -37,7 +37,7 @@ function observation(row: Row) {
   if (row.status !== 'done') return { ...base, note: 'Not processed yet; it is usually ready a minute or two after recording' };
   const perception = (row.perception ?? {}) as Row;
   return { ...base, started_at: iso(row.started_at), ended_at: iso(row.ended_at), summary: row.summary,
-    place: perception.place, activity: perception.activity, perception, transcript: row.transcript ?? [] };
+    place: perception.place, activity: perception.activity, location: row.location ?? null, perception, transcript: row.transcript ?? [] };
 }
 
 // Reads over the capture tables; every query is parameterised and bounded.
@@ -73,8 +73,11 @@ export function memoryStore(query: Query, signDownload: SignDownload, extractFra
     },
     // What was heard and seen, minute by minute (lib/perception.ts). Minutes not processed yet say so.
     async listObservations(args: { capture_id?: string; started_at?: string; ended_at?: string; limit: number }) {
-      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript
-        FROM observations WHERE ($1::text IS NULL OR capture_id = $1)
+      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript,
+        (SELECT k.meta->'locations'->-1 FROM clips k WHERE k.capture_id = o.capture_id AND k.captured_at >= o.minute
+          AND k.captured_at < o.minute + interval '1 minute' AND jsonb_array_length(k.meta->'locations') > 0
+          ORDER BY k.captured_at DESC LIMIT 1) AS location
+        FROM observations o WHERE ($1::text IS NULL OR capture_id = $1)
           AND ($2::timestamptz IS NULL OR minute + interval '1 minute' > $2) AND ($3::timestamptz IS NULL OR minute <= $3)
         ORDER BY minute, capture_id LIMIT $4`, [args.capture_id ?? null, args.started_at ?? null, args.ended_at ?? null, args.limit]);
       return { observations: rows.map(observation) };
@@ -83,8 +86,11 @@ export function memoryStore(query: Query, signDownload: SignDownload, extractFra
       const terms = args.query.split(/\s+/).filter(Boolean).slice(0, 8);
       if (!terms.length) throw new ToolError('invalid_request', 'Give at least one word to search for');
       const like = terms.map((_, index) => `search_text ILIKE $${index + 4}`).join(' AND ');
-      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript
-        FROM observations WHERE status = 'done' AND ${like}
+      const rows = await query(`SELECT capture_id, minute, status, started_at, ended_at, summary, perception, transcript,
+        (SELECT k.meta->'locations'->-1 FROM clips k WHERE k.capture_id = o.capture_id AND k.captured_at >= o.minute
+          AND k.captured_at < o.minute + interval '1 minute' AND jsonb_array_length(k.meta->'locations') > 0
+          ORDER BY k.captured_at DESC LIMIT 1) AS location
+        FROM observations o WHERE status = 'done' AND ${like}
           AND ($1::timestamptz IS NULL OR minute + interval '1 minute' > $1) AND ($2::timestamptz IS NULL OR minute <= $2)
         ORDER BY minute DESC LIMIT $3`,
       [args.started_at ?? null, args.ended_at ?? null, args.limit, ...terms.map((term) => `%${term.replace(/[\\%_]/g, '\\$&')}%`)]);
@@ -154,13 +160,17 @@ function buildServer(store: MemoryStore, scopes: readonly string[]) {
       started_at: time.optional(), ended_at: time.optional(), limit: z.number().int().min(1).max(100).default(20),
     }, (args: Parameters<MemoryStore['listCaptures']>[0]) => store.listCaptures(args).then((captures) => ({ captures }))],
     ['list_observations', 'What Eleagent heard and saw, minute by minute, in time order: a summary, the place and activity, ' +
-      'people, objects, visible text and sounds, and the speech by speaker (labels are anonymous and only consistent ' +
-      'within one minute). Filter by capture_id and/or a time window.', 'memory:read', {
+      'people, objects, visible text and sounds, the speech by speaker (labels are anonymous and only consistent ' +
+      'within one minute), and the phone\'s last location fix (latitude, longitude, accuracy) in that minute. Filter by ' +
+      'capture_id and/or a time window.', 'memory:read', {
       capture_id: captureId.optional(), started_at: time.optional(), ended_at: time.optional(),
       limit: z.number().int().min(1).max(60).default(30),
     }, (args: Parameters<MemoryStore['listObservations']>[0]) => store.listObservations(args)],
     ['search_observations', 'Find minutes whose speech or scene mention all the given words (case-insensitive), newest ' +
-      'first, optionally within a time window. Use list_observations or get_video_frames for the details of a hit.', 'memory:read', {
+      'first, optionally within a time window. Speech and visible text keep the language they were in; descriptions ' +
+      'are in one configured language (English unless set otherwise). Search with words as they would be said, ' +
+      'written or described, and try other languages or synonyms when nothing matches. Use list_observations or ' +
+      'get_video_frames for the details of a hit.', 'memory:read', {
       query: z.string().min(1).max(200), started_at: time.optional(), ended_at: time.optional(),
       limit: z.number().int().min(1).max(50).default(20),
     }, (args: Parameters<MemoryStore['searchObservations']>[0]) => store.searchObservations(args)],

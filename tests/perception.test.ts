@@ -19,6 +19,7 @@ import { startPostgres } from './postgres.ts';
 
 const CAPTURE = 'web-0b5f3a2e-8d1c-4e7a-9f20-3c4d5e6f7a8b-back';
 const SELFIE = 'web-1c6f3a2e-8d1c-4e7a-9f20-3c4d5e6f7a8b-front';
+const WALK = 'web-2d7f3a2e-8d1c-4e7a-9f20-3c4d5e6f7a8b-back';
 let postgres: Awaited<ReturnType<typeof startPostgres>>;
 const query = (text: string, params: unknown[]) => postgres.pool.query(text, params).then((result) => result.rows);
 const seen: PerceiveInput[] = [];
@@ -44,13 +45,14 @@ const deps: PerceptionDeps = {
   language: 'English',
 };
 
-async function addClip(seq: number, capturedAt: string, uploadedSecondsAgo: number, capture = CAPTURE) {
+async function addClip(seq: number, capturedAt: string, uploadedSecondsAgo: number, capture = CAPTURE, meta: object = {}) {
   await query(`INSERT INTO captures (id, camera, first_clip_at, last_clip_at) VALUES ($1, $3, $2, $2)
     ON CONFLICT (id) DO UPDATE SET last_clip_at = GREATEST(captures.last_clip_at, EXCLUDED.last_clip_at)`,
   [capture, capturedAt, capture.endsWith('-front') ? 'front' : 'back']);
   await query(`INSERT INTO clips (media_id, capture_id, clip_seq, captured_at, captured_end_at, content_type, size_bytes, pathname, meta, uploaded_at)
-    VALUES ($1, $2, $3, $4, $4::timestamptz + interval '5 seconds', 'video/mp4', 1000, $5, '{}', now() - make_interval(secs => $6))`,
-  ['media_' + String(seq).padStart(32, '0'), capture, seq, capturedAt, `captures/${capture}/${String(seq).padStart(7, '0')}.mp4`, uploadedSecondsAgo]);
+    VALUES ($1, $2, $3, $4, $4::timestamptz + interval '5 seconds', 'video/mp4', 1000, $5, $7, now() - make_interval(secs => $6))`,
+  ['media_' + String(seq).padStart(32, '0'), capture, seq, capturedAt, `captures/${capture}/${String(seq).padStart(7, '0')}.mp4`,
+    uploadedSecondsAgo, JSON.stringify(meta)]);
   await queueClip(query, capture, capturedAt);
 }
 const observation = async (minute: string, capture = CAPTURE) =>
@@ -119,6 +121,24 @@ test('a failed minute is retried later, not in a tight loop', async () => {
   assert.equal(seen.at(-1)!.camera, 'front');
 });
 
+test('each minute is seen with the previous minutes of the recording as context, and keeps where the phone was', async () => {
+  const fix = { captured_at: '2026-10-22T11:01:20Z', latitude: 31.2304, longitude: 121.4737, accuracy_m: 8 };
+  await addClip(20, '2026-10-22T11:00:30Z', 300, WALK);
+  await addClip(21, '2026-10-22T11:01:20Z', 300, WALK, { locations: [fix] });
+  seen.length = 0;
+  assert.equal(await processReadyMinutes(deps, { max: 5 }), 2);
+  const [first, second] = seen;
+  assert.equal(first.context, '');
+  assert.equal(second.context, '1 min earlier: At a desk, the owner asks for eye drops.');
+  const store = memoryStore(query, deps.signDownload, async () => []);
+  const response = await handleMcp(new Request('http://127.0.0.1/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_observations', arguments: { capture_id: WALK } } }),
+  }), store, ['memory:read']);
+  const { observations } = (await response.json()).result.structuredContent;
+  assert.deepEqual(observations.map((item: { location: unknown }) => item.location), [null, fix]);
+});
+
 test('MCP lists observations by time and finds them by words in speech or scene', async () => {
   const store = memoryStore(query, deps.signDownload, async () => []);
   const call = (name: string, args: object) => handleMcp(new Request('http://127.0.0.1/mcp', {
@@ -131,7 +151,7 @@ test('MCP lists observations by time and finds them by words in speech or scene'
     [['2026-10-22T09:00:00.000Z', 'failed'], ['2026-10-22T09:01:00.000Z', 'pending']]);
   const found = await call('search_observations', { query: 'eye drops' });
   assert.deepEqual(found.observations.map((item: { capture_id: string; minute: string }) => [item.capture_id, item.minute]),
-    [[SELFIE, '2026-10-22T10:00:00.000Z']]);
+    [[WALK, '2026-10-22T11:01:00.000Z'], [WALK, '2026-10-22T11:00:00.000Z'], [SELFIE, '2026-10-22T10:00:00.000Z']]);
   assert.deepEqual(found.observations[0].matching_speech.map((turn: { text: string }) => turn.text), ['Pass the eye drops']);
   assert.equal((await call('search_observations', { query: 'lumina 50%' })).observations.length, 0, '% is matched literally');
 });

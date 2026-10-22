@@ -47,10 +47,12 @@ export interface PerceiveInput {
   frames: { offset: number; jpeg: Buffer }[];
   audio: Buffer | null;
   transcript: string;
+  /** What the previous minutes of this recording looked like, for continuity. */
+  context: string;
   language: string;
 }
 
-const prompt = ({ camera, language, transcript }: PerceiveInput) => `You are the perception layer of a personal memory \
+const prompt = ({ camera, language, transcript, context }: PerceiveInput) => `You are the perception layer of a personal memory \
 system. The owner wears or holds a phone that records the day. You get up to one minute of it: still frames in time \
 order, each labelled with its time in seconds from the start, the minute's audio, and a transcript of its speech \
 (speaker labels are anonymous and only consistent within this minute). This recording uses the ${camera} camera: \
@@ -60,6 +62,10 @@ Describe what a careful observer would remember about this minute, so the owner 
 what they did, who was there, what they handled, read or heard. Report only what the frames and audio support; say \
 "unclear" rather than guess. Speech from a screen, a call or a broadcast is not a conversation in the room. Write every \
 value in ${language}, but copy visible text verbatim in its own language.
+
+Earlier in this recording (other minutes' descriptions, for continuity only; they can be wrong, and this minute may
+differ):
+${context || '(this is the start of the recording)'}
 
 Transcript:
 ${transcript || '(no speech recognised)'}

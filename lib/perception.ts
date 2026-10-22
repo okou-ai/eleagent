@@ -22,6 +22,8 @@ export interface Segment { start: string; end: string; speaker: string | null; t
 const QUIET_SECONDS = 30;
 const MAX_ATTEMPTS = 3;
 const SEGMENT_PAUSE_SECONDS = 1.5;
+// How far back the previous minutes' descriptions are given to the model as context.
+const CONTEXT_MINUTES = 3;
 
 const iso = (value: unknown) => new Date(value as string).toISOString();
 
@@ -98,11 +100,16 @@ export async function processMinute(deps: PerceptionDeps, captureId: string, min
       transcript = segments(heard.words, media.startedAt);
     }
     const offset = (time: string | Date) => (new Date(time).getTime() - media.startedAt.getTime()) / 1000;
+    const earlier = await query(`SELECT minute, summary FROM observations WHERE capture_id = $1 AND status = 'done'
+      AND minute < $2::timestamptz AND minute >= $2::timestamptz - make_interval(mins => ${CONTEXT_MINUTES}) ORDER BY minute`, [captureId, minute]);
+    const context = earlier.filter((row) => row.summary).map((row) =>
+      `${Math.round((Date.parse(minute) - Date.parse(iso(row.minute))) / 60_000)} min earlier: ${row.summary}`).join('\n');
     const seen = await deps.perceive({
       camera: captureId.endsWith('-front') ? 'front' : 'back',
       frames: media.frames.map((frame) => ({ offset: offset(frame.at), jpeg: frame.jpeg })),
       audio: media.audio,
       transcript: transcript.map((turn) => `[${offset(turn.start).toFixed(1)}s] ${turn.speaker ?? 'speaker'}: ${turn.text}`).join('\n'),
+      context,
       language: deps.language,
     });
     cost += seen.cost;
