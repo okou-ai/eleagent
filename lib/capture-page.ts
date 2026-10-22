@@ -1,3 +1,11 @@
+// Clips are PUT to the Blob API (https://vercel.com/api/blob/?pathname=...), the host the SDK signs uploads for; reads of
+// private blobs go to <store>.private.blob.vercel-storage.com.
+export const CAPTURE_CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:", "media-src 'self' blob:",
+  "connect-src 'self' https://vercel.com/api/blob/ https://*.blob.vercel-storage.com", "base-uri 'none'",
+  "form-action 'self'", "frame-ancestors 'none'",
+].join('; ');
+
 // The recording page. Its script and styles live in /public/capture; app.js drives the camera, the local clip queue
 // (IndexedDB) and uploads.
 export const CAPTURE_HTML = `<!doctype html>
