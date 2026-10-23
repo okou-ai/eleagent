@@ -55,6 +55,7 @@ const okou = setupOkou({
   $, connected: okouConnected, recordingStream: () => stream,
   captureId: () => (['recording', 'acquiring'].includes(state.phase) ? state.captureId : null),
   onModeChange: () => render(),
+  onDisconnected: () => void okouStatus(),
 });
 let okouPress = null, okouLongPress = false;
 function openOkou() {

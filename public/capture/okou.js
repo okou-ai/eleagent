@@ -74,7 +74,7 @@ function storedPrint() {
   } catch { return null; }
 }
 
-// env: { $, connected(), recordingStream(), captureId(), onModeChange(active) }
+// env: { $, connected(), recordingStream(), captureId(), onModeChange(active), onDisconnected() }
 export function setupOkou(env) {
   const { $ } = env;
   const ring = new Float32Array(RING_SECONDS * SAMPLE_RATE);
@@ -184,6 +184,7 @@ export function setupOkou(env) {
     try {
       const response = await fetch(`/api/okou/ask?${query}`, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: encodeWav(samples) });
       const result = await response.json().catch(() => ({}));
+      if (response.status === 409) env.onDisconnected?.();
       close(response.ok ? result.screen || 'Handed to Okou' : result.error?.message || 'Okou could not take that');
     } catch {
       close('Could not reach Okou');

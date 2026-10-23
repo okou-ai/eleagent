@@ -24,7 +24,8 @@ function fakeOkou() {
     const url = new URL(String(input));
     const json = (body: object, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
     if (url.href === 'https://api.okou.ai/.well-known/oauth-protected-resource/mcp') {
-      return json({ resource: 'https://api.okou.ai/mcp', authorization_servers: ['https://clerk.okou.example'], scopes_supported: ['openid', 'okou:chat:read', 'okou:chat:send', 'okou:chat:manage', 'offline_access'] });
+      return json({ resource: 'https://api.okou.ai/mcp', authorization_servers: ['https://clerk.okou.example'], scopes_supported: ['openid', 'email', 'profile', 'user:org:read', 'okou:chat:read', 'okou:chat:send',
+        'okou:chat:manage', 'okou:run:cancel', 'offline_access'] });
     }
     if (url.href === 'https://clerk.okou.example/.well-known/oauth-authorization-server') {
       return json({ issuer: 'https://clerk.okou.example', authorization_endpoint: 'https://clerk.okou.example/oauth/authorize',
@@ -50,7 +51,9 @@ test('connecting Okou: PKCE with a client ID metadata document, tokens kept, ref
   assert.equal(authorize.searchParams.get('client_id'), `${ORIGIN}/okou/client.json`);
   assert.equal(authorize.searchParams.get('redirect_uri'), `${ORIGIN}/api/okou/callback`);
   assert.equal(authorize.searchParams.get('resource'), 'https://api.okou.ai/mcp');
-  assert.equal(authorize.searchParams.get('scope'), 'okou:chat:read okou:chat:send offline_access');
+  // Every scope Okou offers, including user:org:read: Okou's MCP accepts only tokens naming an organization.
+  assert.equal(authorize.searchParams.get('scope'),
+    'openid email profile user:org:read okou:chat:read okou:chat:send okou:chat:manage okou:run:cancel offline_access');
   assert.equal(authorize.searchParams.get('code_challenge_method'), 'S256');
 
   await assert.rejects(connection.finish(new URLSearchParams({ state: 'forged', code: 'c' })), /expired/);
@@ -184,6 +187,13 @@ test('a request spoken to Okou on purpose is transcribed, written up with its mo
   // Transcription down: nothing is sent. The model down: Okou gets the owner's own words.
   const deaf = { ...spoken, transcribe: async () => { throw new Error('OpenRouter is unavailable'); } };
   assert.equal((await handleSpokenRequest(deaf, { wav: Buffer.from('wav'), at, captureId: CAPTURE })).status, 502);
+  // Okou refusing the token drops the connection, so that the phone asks to connect again.
+  let forgotten = 0;
+  const refusing = { ...spoken, forgetOkou: async () => { forgotten += 1; },
+    callOkou: async () => { throw new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"invalid_token"}'); } };
+  assert.deepEqual(await handleSpokenRequest(refusing, { wav: Buffer.from('wav'), at, captureId: CAPTURE }),
+    { status: 409, error: 'Okou needs connecting again: tap the Okou mark' });
+  assert.equal(forgotten, 1);
   const dumb = { ...spoken, complete: async () => { throw new Error('no JSON'); } };
   assert.deepEqual(await handleSpokenRequest(dumb, { wav: Buffer.from('wav'), at, captureId: null }), { status: 200, screen: 'Handed to Okou' });
   assert.match(String(calls.at(-1)!.args.prompt), /^Hey Okou, 明天下午提醒我买眼药水\n\n— Said to Okou through Eleagent at 09:00 \(Asia\/Shanghai\)\.$/);

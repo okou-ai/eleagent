@@ -17,6 +17,7 @@ export default async function Account({ searchParams }: PageProps<'/account'>) {
   const handoffs = await sql()`SELECT heard_at, request, status FROM handoffs ORDER BY heard_at DESC LIMIT 5`;
   const nights = await sql()`SELECT day::text AS day, status, cost_usd, error FROM sleep_days ORDER BY day DESC LIMIT 3`;
   const OKOU_MESSAGES: Record<string, string> = { connected: 'Okou is connected.', failed: 'Connecting Okou did not work; try again.',
+    refused: 'Okou did not accept the connection. Connect again, and choose your organization when Okou asks.',
     unavailable: 'Okou could not be reached; try again later.' };
   return (
     <main className="signin">
@@ -35,8 +36,8 @@ export default async function Account({ searchParams }: PageProps<'/account'>) {
         </form>
       ))}
       <h2>Okou</h2>
-      <p className="hint">When you ask Okou for something out loud while recording, Eleagent hands the request to Okou
-        in one conversation there.</p>
+      <p className="hint">While recording, say “Hey Okou” or tap the Okou mark and say what you want: Eleagent hands the
+        request to Okou in one conversation there.</p>
       {typeof okouResult === 'string' && OKOU_MESSAGES[okouResult] && <p className="hint" role="status">{OKOU_MESSAGES[okouResult]}</p>}
       {okouStatus.connected
         ? <p className="hint">Connected{okouStatus.since ? ` since ${new Date(okouStatus.since).toLocaleString('en')}` : ''}.</p>
