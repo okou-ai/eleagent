@@ -59,6 +59,11 @@ test('connecting Okou: PKCE with a client ID metadata document, tokens kept, ref
   await assert.rejects(connection.finish(new URLSearchParams({ state: 'forged', code: 'c' })), /expired/);
   assert.equal(await connection.accessToken(), null, 'a forged callback connects nothing');
 
+  // Okou's sign-in refusing the scopes comes back as an error the callback can tell apart.
+  const refusedScopes = new URL(await connection.start());
+  await assert.rejects(connection.finish(new URLSearchParams({ state: refusedScopes.searchParams.get('state')!, error: 'invalid_scope' })),
+    (error: { code?: string }) => error.code === 'invalid_scope');
+
   const restarted = new URL(await connection.start('/account'));
   const { verifier } = store.data.get('okou_pending') as { verifier: string };
   assert.equal(restarted.searchParams.get('code_challenge'), createHash('sha256').update(verifier).digest('base64url'));

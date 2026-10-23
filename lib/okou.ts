@@ -89,7 +89,7 @@ export function okouConnection({ origin, store, resource = OKOU_MCP, fetchImpl =
       const pending = await store.get('okou_pending') as { state: string; verifier: string; at: number; returnTo?: string } | null;
       await store.set('okou_pending', null);
       if (!pending || pending.state !== params.get('state') || now() - pending.at > PENDING_MS) throw new Error('This approval expired; connect again');
-      if (params.get('error')) throw new Error(`Okou did not approve: ${params.get('error')}`);
+      if (params.get('error')) throw Object.assign(new Error(`Okou did not approve: ${params.get('error')}`), { code: params.get('error') });
       const server = await discover();
       const tokens = await tokenRequest(server, { grant_type: 'authorization_code', code: params.get('code') ?? '',
         redirect_uri: callback, code_verifier: pending.verifier });

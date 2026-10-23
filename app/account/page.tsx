@@ -18,6 +18,9 @@ export default async function Account({ searchParams }: PageProps<'/account'>) {
   const nights = await sql()`SELECT day::text AS day, status, cost_usd, error FROM sleep_days ORDER BY day DESC LIMIT 3`;
   const OKOU_MESSAGES: Record<string, string> = { connected: 'Okou is connected.', failed: 'Connecting Okou did not work; try again.',
     refused: 'Okou did not accept the connection. Connect again, and choose your organization when Okou asks.',
+    scope: 'Okou\'s sign-in (Clerk) does not allow Eleagent the access it asks for. An Okou admin has to allow Eleagent\'s ' +
+      'scopes in the Clerk Dashboard (OAuth applications → Applications → Eleagent → Edit scopes); then connect again.',
+    denied: 'Okou was not given access.',
     unavailable: 'Okou could not be reached; try again later.' };
   return (
     <main className="signin">
