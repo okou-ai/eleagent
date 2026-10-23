@@ -16,7 +16,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL('/account?okou=refused', request.url), 303);
     }
     return NextResponse.redirect(new URL(back === '/account' ? '/account?okou=connected' : back, request.url), 303);
-  } catch {
-    return NextResponse.redirect(new URL('/account?okou=failed', request.url), 303);
+  } catch (error) {
+    // Okou's answer, shown as one of /account's own messages (never Okou's text).
+    const code = (error as { code?: string }).code;
+    const result = code === 'invalid_scope' ? 'scope' : code === 'access_denied' ? 'denied' : 'failed';
+    return NextResponse.redirect(new URL(`/account?okou=${result}`, request.url), 303);
   }
 }
