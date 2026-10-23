@@ -51,8 +51,9 @@ test('connecting Okou: PKCE with a client ID metadata document, tokens kept, ref
   assert.equal(authorize.searchParams.get('client_id'), `${ORIGIN}/okou/client.json`);
   assert.equal(authorize.searchParams.get('redirect_uri'), `${ORIGIN}/api/okou/callback`);
   assert.equal(authorize.searchParams.get('resource'), 'https://api.okou.ai/mcp');
-  // Okou's MCP accepts only tokens naming an organization, which takes user:org:read.
-  assert.equal(authorize.searchParams.get('scope'), 'user:org:read okou:chat:read okou:chat:send offline_access');
+  // Every scope Okou offers, including user:org:read: Okou's MCP accepts only tokens naming an organization.
+  assert.equal(authorize.searchParams.get('scope'),
+    'openid email profile user:org:read okou:chat:read okou:chat:send okou:chat:manage okou:run:cancel offline_access');
   assert.equal(authorize.searchParams.get('code_challenge_method'), 'S256');
 
   await assert.rejects(connection.finish(new URLSearchParams({ state: 'forged', code: 'c' })), /expired/);
