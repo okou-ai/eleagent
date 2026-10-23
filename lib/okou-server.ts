@@ -66,6 +66,7 @@ export function handoffDeps(): HandoffDeps {
     complete: (system, user, maxTokens) => completeJson(TEXT_MODEL, system, user, maxTokens),
     agentId: process.env.OKOU_AGENT_ID || undefined,
     transcribe: async (wav) => (await transcribe(wav, 'wav')).text,
+    forgetOkou: () => connection.disconnect(),
   };
 }
 

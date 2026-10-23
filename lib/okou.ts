@@ -7,8 +7,9 @@ import { createHash, randomBytes } from 'node:crypto';
 
 export const OKOU_MCP = 'https://api.okou.ai/mcp';
 const PENDING_MS = 10 * 60_000;
-// Only what handing over requests needs: read and send chat messages, and stay connected.
-const WANTED_SCOPES = ['okou:chat:read', 'okou:chat:send', 'offline_access'];
+// Only what handing over requests needs: the owner's Okou organization (Okou's MCP accepts only tokens that name one,
+// and the token names it only with user:org:read), read and send chat messages, and stay connected.
+const WANTED_SCOPES = ['user:org:read', 'okou:chat:read', 'okou:chat:send', 'offline_access'];
 const REFRESH_EARLY_MS = 2 * 60_000;
 
 export interface OkouStore {

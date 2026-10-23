@@ -18,7 +18,12 @@ export interface HandoffDeps {
   agentId?: string;
   /** Speech to text, for requests spoken to Okou directly. */
   transcribe?: (wav: Buffer) => Promise<string>;
+  /** Drops the Okou connection after Okou refused its token, so that the owner connects again. */
+  forgetOkou?: () => Promise<void>;
 }
+
+// Okou refused the token itself (not the request): retrying cannot help, connecting again can.
+export const refused = (error: unknown) => /invalid_token|insufficient_scope/.test(String((error as Error)?.message ?? error));
 
 const MIN_CONFIDENCE = 0.8;
 const CONTEXT_MINUTES = 2;
@@ -125,6 +130,10 @@ Promise<SpokenResult> {
     return { status: 200, screen };
   } catch (error) {
     await query(`UPDATE handoffs SET status = 'failed', error = $2 WHERE id = $1`, [row.id, String((error as Error).message ?? error).slice(0, 500)]);
+    if (refused(error)) {
+      await deps.forgetOkou?.();
+      return { status: 409, error: 'Okou needs connecting again: tap the Okou mark' };
+    }
     return { status: 502, error: 'Okou could not take it; try again' };
   }
 }
@@ -170,6 +179,7 @@ export async function considerHandoff(deps: HandoffDeps, captureId: string, minu
       // Not retried: Okou's send has no safe retry after a lost acknowledgement.
       await query(`UPDATE handoffs SET status = 'failed', error = $3 WHERE capture_id = $1 AND minute = $2 AND source = 'minute'`,
         [captureId, minute, String((error as Error).message ?? error).slice(0, 500)]);
+      if (refused(error)) await deps.forgetOkou?.();
       return 'failed';
     }
   } catch {
